@@ -1,466 +1,525 @@
+#include <winsock2.h>
+#include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <winsock2.h>
-#include <windows.h>
 
 #pragma comment(lib, "ws2_32.lib")
 
-#define MAX_BUFFER 1024
-#define MAX_USERS 100
-#define MAX_ACCIDENTS 100
-#define MAX_INFO_LENGTH 30
+#define SERVER_IP   "172.30.1.12"
+#define SERVER_PORT 5548
+#define BUF_SIZE    256
 
-// 사용자 정보 구조체
-typedef struct {
-    char id[MAX_INFO_LENGTH];
-    char password[MAX_INFO_LENGTH];
-    char car_number[MAX_INFO_LENGTH];
-    char car_type[MAX_INFO_LENGTH];
-    char insurance_company[MAX_INFO_LENGTH];
-} USER_DATA;
+void ErrorHandling(const char* msg) {
+    fputs(msg, stderr);
+    fputc('\n', stderr);
+    exit(EXIT_FAILURE);
+}
 
-// 사고 정보 구조체
-typedef struct {
-    char id[MAX_INFO_LENGTH];
-    char accident_date[MAX_INFO_LENGTH];
-    char accident_type[MAX_INFO_LENGTH];
-    char accident_description[MAX_INFO_LENGTH];
-    char accident_role[MAX_INFO_LENGTH];  // 가해자/피해자
-} ACCIDENT_DATA;
+// 회원가입 함수
+int register_user(SOCKET sock) {
+    char buffer[BUF_SIZE];
+    char id[20], pw[20], car_number[20], car_type[20], ins_company[20];
+    int car_choice, ins_choice;
+    
+    printf("\n=== 회원가입 ===\n");
+    
+    // ID 입력
+    printf("ID를 입력하세요: ");
+    if (!fgets(id, sizeof(id), stdin))
+        ErrorHandling("입력 오류");
+    id[strcspn(id, "\r\n")] = '\0';
+    
+    // PW 입력
+    printf("비밀번호를 입력하세요: ");
+    if (!fgets(pw, sizeof(pw), stdin))
+        ErrorHandling("입력 오류");
+    pw[strcspn(pw, "\r\n")] = '\0';
+    
+    // 차량번호 입력
+    printf("차량번호를 입력하세요: ");
+    if (!fgets(car_number, sizeof(car_number), stdin))
+        ErrorHandling("입력 오류");
+    car_number[strcspn(car_number, "\r\n")] = '\0';
+    
+    // 차종류 입력
+    while (1) {
+        printf("\n차종류 선택하세요.\n");
+        printf("1. SUV\n");
+        printf("2. 승용차\n");
+        printf("3. 트럭\n");
+        printf("선택: ");
+        scanf("%d", &car_choice);
+        getchar(); // 버퍼 비우기
+        
+        if (car_choice >= 1 && car_choice <= 3) break;
+        printf("잘못된 선택입니다. 다시 선택해주세요.\n");
+    }
+    
+    switch(car_choice) {
+        case 1: strcpy(car_type, "SUV"); break;
+        case 2: strcpy(car_type, "승용차"); break;
+        case 3: strcpy(car_type, "트럭"); break;
+    }
+    
+    // 보험사 입력
+    while (1) {
+        printf("\n보험사 선택\n");
+        printf("1. 삼성화재\n");
+        printf("2. 한화손해보험\n");
+        printf("3. KB손해보험\n");
+        printf("4. DB손해보험\n");
+        printf("선택: ");
+        scanf("%d", &ins_choice);
+        getchar(); // 버퍼 비우기
+        
+        if (ins_choice >= 1 && ins_choice <= 4) break;
+        printf("잘못된 선택입니다. 다시 선택해주세요.\n");
+    }
+    
+    switch(ins_choice) {
+        case 1: strcpy(ins_company, "삼성화재"); break;
+        case 2: strcpy(ins_company, "한화손해보험"); break;
+        case 3: strcpy(ins_company, "KB손해보험"); break;
+        case 4: strcpy(ins_company, "DB손해보험"); break;
+    }
+    
+    // 입력 정보 확인
+    printf("\n=== 입력 정보 확인 ===\n");
+    printf("ID: %s\n", id);
+    printf("차량번호: %s\n", car_number);
+    printf("차종류: %s\n", car_type);
+    printf("보험사: %s\n", ins_company);
+    printf("\n회원가입을 진행하시겠습니까? (1:예, 2:아니오): ");
+    
+    int confirm;
+    scanf("%d", &confirm);
+    getchar(); // 버퍼 비우기
+    
+    if (confirm != 1) {
+        printf("회원가입이 취소되었습니다.\n");
+        return 0;
+    }
+    
+    // 회원가입 요청 전송
+    sprintf(buffer, "new/%s/%s/%s/%s/%s", id, pw, car_number, car_type, ins_company);
+    if (send(sock, buffer, strlen(buffer), 0) == SOCKET_ERROR)
+        ErrorHandling("send() error");
+    
+    // 서버 응답 수신
+    int strLen = recv(sock, buffer, BUF_SIZE, 0);
+    if (strLen == SOCKET_ERROR)
+        ErrorHandling("recv() error");
+    buffer[strLen] = '\0';
+    
+    if (strcmp(buffer, "1") == 0) {
+        printf("\n회원가입이 완료되었습니다.\n");
+        printf("로그인을 진행합니다.\n");
+        return 1;
+    } else {
+        printf("\n회원가입 실패! (ID 중복)\n");
+        return 0;
+    }
+}
 
-// 전역 변수
-USER_DATA users[MAX_USERS];
-ACCIDENT_DATA accidents[MAX_ACCIDENTS];
-int user_count = 0;
-int accident_count = 0;
+// 사용자 정보 수정 함수
+void update_user_info(SOCKET sock, const char* user_id) {
+    char update_type[2];
+    char new_value[256];
+    int choice;
 
-// 함수 선언
-void handle_client(SOCKET client_socket);
-void process_login(char* buffer, SOCKET client_socket);  // 로그인 처리
-void process_register(char* buffer, SOCKET client_socket);  // 회원가입 처리
-void process_user_update(char* buffer, SOCKET client_socket);  // 사용자 정보 수정
-void accident_info(char* buffer, SOCKET client_socket);  // 사고 정보
-void accident_data(char* buffer, SOCKET client_socket);  // 사고 유형별 안내
-void accident_inscompany(char* buffer, SOCKET client_socket);  // 보험사별 안내
-void save_user_data();  // 사용자 데이터 저장
-void load_accident_data();  // 사고 데이터 로드
-void save_accident_data();  // 사고 데이터 저장
-void 
+    while (1) {
+        printf("\n=== 사용자 정보 수정 ===\n");
+        printf("1. 비밀번호 변경\n");
+        printf("2. 차번호 변경\n");
+        printf("3. 차종류 변경\n");
+        printf("4. 보험사 변경\n");
+        printf("5. 전체 정보 수정\n");
+        printf("6. 이전 메뉴로\n");
+        printf("선택: ");
+        scanf("%d", &choice);
+        getchar(); // 버퍼 비우기
 
-int main() {
+        switch (choice) {
+            case 1: // 비밀번호 변경
+                printf("새 비밀번호: ");
+                if (!fgets(new_value, sizeof(new_value), stdin))
+                    ErrorHandling("입력 오류");
+                new_value[strcspn(new_value, "\r\n")] = '\0';
+                sprintf(update_type, "1");
+                break;
+
+            case 2: // 차번호 변경
+                printf("새 차번호: ");
+                if (!fgets(new_value, sizeof(new_value), stdin))
+                    ErrorHandling("입력 오류");
+                new_value[strcspn(new_value, "\r\n")] = '\0';
+                sprintf(update_type, "2");
+                break;
+
+            case 3: // 차종류 변경
+                printf("\n=== 차종류 선택 ===\n");
+                printf("1. SUV\n");
+                printf("2. 승용차\n");
+                printf("3. 트럭\n");
+                printf("선택: ");
+                scanf("%d", &choice);
+                getchar(); // 버퍼 비우기
+
+                switch (choice) {
+                    case 1:
+                        strcpy(new_value, "SUV");
+                        break;
+                    case 2:
+                        strcpy(new_value, "승용차");
+                        break;
+                    case 3:
+                        strcpy(new_value, "트럭");
+                        break;
+                    default:
+                        printf("잘못된 선택입니다.\n");
+                        continue;
+                }
+                sprintf(update_type, "3");
+                break;
+
+            case 4: // 보험사 변경
+                printf("\n=== 보험사 선택 ===\n");
+                printf("1. 삼성화재\n");
+                printf("2. 한화손해보험\n");
+                printf("3. KB손해보험\n");
+                printf("4. DB손해보험\n");
+                printf("선택: ");
+                scanf("%d", &choice);
+                getchar(); // 버퍼 비우기
+
+                switch (choice) {
+                    case 1:
+                        strcpy(new_value, "삼성화재");
+                        break;
+                    case 2:
+                        strcpy(new_value, "한화손해보험");
+                        break;
+                    case 3:
+                        strcpy(new_value, "KB손해보험");
+                        break;
+                    case 4:
+                        strcpy(new_value, "DB손해보험");
+                        break;
+                    default:
+                        printf("잘못된 선택입니다.\n");
+                        continue;
+                }
+                sprintf(update_type, "4");
+                break;
+
+            case 5: // 전체 정보 수정
+                printf("새 비밀번호: ");
+                if (!fgets(new_value, sizeof(new_value), stdin))
+                    ErrorHandling("입력 오류");
+                new_value[strcspn(new_value, "\r\n")] = '\0';
+                strcat(new_value, "\n");
+
+                printf("새 차번호: ");
+                char temp[256];
+                if (!fgets(temp, sizeof(temp), stdin))
+                    ErrorHandling("입력 오류");
+                temp[strcspn(temp, "\r\n")] = '\0';
+                strcat(new_value, temp);
+                strcat(new_value, "\n");
+
+                printf("\n=== 차종류 선택 ===\n");
+                printf("1. SUV\n");
+                printf("2. 승용차\n");
+                printf("3. 트럭\n");
+                printf("선택: ");
+                scanf("%d", &choice);
+                getchar(); // 버퍼 비우기
+
+                switch (choice) {
+                    case 1:
+                        strcat(new_value, "SUV");
+                        break;
+                    case 2:
+                        strcat(new_value, "승용차");
+                        break;
+                    case 3:
+                        strcat(new_value, "트럭");
+                        break;
+                    default:
+                        printf("잘못된 선택입니다.\n");
+                        continue;
+                }
+                strcat(new_value, "\n");
+
+                printf("\n=== 보험사 선택 ===\n");
+                printf("1. 삼성화재\n");
+                printf("2. 한화손해보험\n");
+                printf("3. KB손해보험\n");
+                printf("4. DB손해보험\n");
+                printf("선택: ");
+                scanf("%d", &choice);
+                getchar(); // 버퍼 비우기
+
+                switch (choice) {
+                    case 1:
+                        strcat(new_value, "삼성화재");
+                        break;
+                    case 2:
+                        strcat(new_value, "한화손해보험");
+                        break;
+                    case 3:
+                        strcat(new_value, "KB손해보험");
+                        break;
+                    case 4:
+                        strcat(new_value, "DB손해보험");
+                        break;
+                    default:
+                        printf("잘못된 선택입니다.\n");
+                        continue;
+                }
+                sprintf(update_type, "5");
+                break;
+
+            case 6: // 이전 메뉴로
+                return;
+
+            default:
+                printf("잘못된 선택입니다.\n");
+                continue;
+        }
+
+        // 서버에 수정 요청 전송
+        char request[512];
+        sprintf(request, "UF/%s/%s/%s", update_type, user_id, new_value);
+        send(sock, request, strlen(request), 0);
+
+        // 서버 응답 수신
+        char response[2];
+        if (recv(sock, response, 1, 0) <= 0)
+            ErrorHandling("서버 응답 수신 실패");
+
+        if (response[0] == '1')
+            printf("정보가 성공적으로 수정되었습니다.\n");
+        else
+            printf("정보 수정에 실패했습니다.\n");
+    }
+}
+
+// 초기 메뉴 함수
+void show_initial_menu(SOCKET sock) {
+    while (1) {
+        printf("\n=== 교통사고 처리 안내 시스템 ===\n");
+        printf("1. 로그인\n");
+        printf("2. 회원가입\n");
+        printf("3. 종료\n");
+        printf("선택: ");
+        
+        int choice;
+        scanf("%d", &choice);
+        getchar(); // 버퍼 비우기
+        
+        switch (choice) {
+            case 1: // 로그인
+                if (login(sock)) {
+                    return; // 로그인 성공 시 함수 종료
+                }
+                break;
+                
+            case 2: // 회원가입
+                if (register_user(sock)) {
+                    // 회원가입 성공 후 로그인 화면으로 자동 전환
+                    if (login(sock)) {
+                        return;
+                    }
+                }
+                break;
+                
+            case 3: // 종료
+                printf("\n프로그램을 종료합니다.\n");
+                closesocket(sock);
+                WSACleanup();
+                exit(0);
+                
+            default:
+                printf("\n잘못된 선택입니다.\n");
+        }
+    }
+}
+
+// 메인 메뉴 함수
+void show_main_menu(SOCKET sock, const char* user_id) {
+    while (1) {
+        printf("\n=== 메인 메뉴 ===\n");
+        printf("1. 사용자 정보 수정\n");
+        printf("2. 사고 유형별 안내\n");
+        printf("3. 사고 정보 입력\n");
+        printf("4. 보험사 보상 안내\n");
+        printf("5. 로그아웃\n");
+        printf("선택: ");
+        
+        int choice;
+        scanf("%d", &choice);
+        getchar(); // 버퍼 비우기
+        
+        switch (choice) {
+            case 1: // 사용자 정보 수정
+                update_user_info(sock, user_id);
+                break;
+                
+            case 2: // 사고 유형별 안내
+                show_accident_guide(sock, user_id);
+                break;
+                
+            case 3: // 사고 정보 입력
+                // TODO: 사고 정보 입력 기능 구현
+                printf("사고 정보 입력 기능은 아직 구현되지 않았습니다.\n");
+                break;
+                
+            case 4: // 보험사 보상 안내
+                // TODO: 보험사 보상 안내 기능 구현
+                printf("보험사 보상 안내 기능은 아직 구현되지 않았습니다.\n");
+                break;
+                
+            case 5: // 로그아웃
+                return;
+                
+            default:
+                printf("\n잘못된 선택입니다.\n");
+        }
+    }
+}
+
+int main(void) {
     WSADATA wsaData;
-    SOCKET server_socket, client_socket;
-    struct sockaddr_in server_addr, client_addr;
-    int client_addr_size;
+    SOCKET sock;
+    struct sockaddr_in servAddr;
+    char buffer[BUF_SIZE];
+    int strLen;
 
-    // Winsock 초기화
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        printf("WSAStartup 실패\n");
-        return 1;
-    }
+    char id[20], pw[20], cmd[BUF_SIZE];
 
-    // 서버 소켓 생성
-    server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_socket == INVALID_SOCKET) {
-        printf("소켓 생성 실패\n");
-        return 1;
-    }
+    // 콘솔 UTF-8 설정
+    SetConsoleOutputCP(CP_UTF8);
+
+    // WinSock 초기화
+    if (WSAStartup(MAKEWORD(2,2), &wsaData) != 0)
+        ErrorHandling("WSAStartup() error");
+
+    // 소켓 생성
+    sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sock == INVALID_SOCKET)
+        ErrorHandling("socket() error");
 
     // 서버 주소 설정
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    server_addr.sin_port = htons(9000);
+    memset(&servAddr, 0, sizeof(servAddr));
+    servAddr.sin_family      = AF_INET;
+    servAddr.sin_addr.s_addr = inet_addr(SERVER_IP);
+    servAddr.sin_port        = htons(SERVER_PORT);
 
-    // 소켓 바인딩
-    if (bind(server_socket, (struct sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR) {
-        printf("바인딩 실패\n");
-        return 1;
-    }
+    // 서버에 연결
+    if (connect(sock, (SOCKADDR*)&servAddr, sizeof(servAddr)) == SOCKET_ERROR)
+        ErrorHandling("connect() error");
 
-    // 연결 대기
-    if (listen(server_socket, SOMAXCONN) == SOCKET_ERROR) {
-        printf("listen 실패\n");
-        return 1;
-    }
+    fputs("서버에 연결되었습니다.\n\n", stdout);
+    
+    // 초기 메뉴 표시
+    show_initial_menu(sock);
 
-    printf("서버가 시작되었습니다. 포트: 9000\n");
+  for (;;) {
+        fputs("\n메뉴:\n", stdout);
+        fputs("1. 사용자 정보 수정\n", stdout);
+        fputs("2. 도서 추가\n", stdout);
+        fputs("3. 도서 삭제\n", stdout);
+        fputs("4. 도서 수정\n", stdout);
+        fputs("5. 평점 정렬\n", stdout);
+        fputs("6. 사용자 추가\n", stdout);
+        fputs("7. 사용자 삭제\n", stdout);
+        fputs("8. 종료\n", stdout);
+        fputs("선택: ", stdout); fflush(stdout);
 
-    // 사용자 데이터 로드
-    load_user_data();
-    load_accident_data();
+        if (!fgets(cmd, sizeof(cmd), stdin))
+            break;
+        cmd[strcspn(cmd, "\r\n")] = '\0';
 
-    while (1) {
-        client_addr_size = sizeof(client_addr);
-        client_socket = accept(server_socket, (struct sockaddr*)&client_addr, &client_addr_size);
-        
-        if (client_socket == INVALID_SOCKET) {
-            printf("클라이언트 연결 실패\n");
-            continue;
+        // 옵션별 명령어 구성
+        if (strcmp(cmd, "1") == 0) {
+            printf("1번. 비밀번호 변경");
+            printf("2번. 차 번호 수정");
+            printf("3번. 차종류 수정");
+            printf("4번. 보험사 수정");
+            printf("5번. 전체정보 수정");
+            
+            fputs(": ", stdout); fflush(stdout);
+            fgets(buffer, sizeof(buffer), stdin);
+            buffer[strcspn(buffer, "\r\n")] = '\0';
+            snprintf(cmd, BUF_SIZE, "1 %s", buffer);
+        }
+        else if (strcmp(cmd, "2") == 0) {
+            char title[100], author[100], rating[20];
+            fputs("제목: ", stdout); fflush(stdout);
+            fgets(title, sizeof(title), stdin);
+            title[strcspn(title, "\r\n")] = '\0';
+            fputs("저자: ", stdout); fflush(stdout);
+            fgets(author, sizeof(author), stdin);
+            author[strcspn(author, "\r\n")] = '\0';
+            fputs("평점: ", stdout); fflush(stdout);
+            fgets(rating, sizeof(rating), stdin);
+            rating[strcspn(rating, "\r\n")] = '\0';
+            snprintf(cmd, BUF_SIZE, "2 %s %s %s", title, author, rating);
+        }
+        else if (strcmp(cmd, "3") == 0) {
+            fputs("삭제 키워드: ", stdout); fflush(stdout);
+            fgets(buffer, sizeof(buffer), stdin);
+            buffer[strcspn(buffer, "\r\n")] = '\0';
+            snprintf(cmd, BUF_SIZE, "3 %s", buffer);
+        }
+        else if (strcmp(cmd, "4") == 0) {
+            char key[100], newTitle[100], newAuthor[100], newRating[20];
+            fputs("검색 키워드: ", stdout); fflush(stdout);
+            fgets(key, sizeof(key), stdin);
+            key[strcspn(key, "\r\n")] = '\0';
+            fputs("새 제목: ", stdout); fflush(stdout);
+            fgets(newTitle, sizeof(newTitle), stdin);
+            newTitle[strcspn(newTitle, "\r\n")] = '\0';
+            fputs("새 저자: ", stdout); fflush(stdout);
+            fgets(newAuthor, sizeof(newAuthor), stdin);
+            newAuthor[strcspn(newAuthor, "\r\n")] = '\0';
+            fputs("새 평점: ", stdout); fflush(stdout);
+            fgets(newRating, sizeof(newRating), stdin);
+            newRating[strcspn(newRating, "\r\n")] = '\0';
+            snprintf(cmd, BUF_SIZE, "4 %s %s %s %s",
+                     key, newTitle, newAuthor, newRating);
+        }
+        else if (strcmp(cmd, "5") == 0) {
+            strcpy(cmd, "5");
+        }
+        else if (strcmp(cmd, "6") == 0) {
+            fputs("추가할 사용자 ID: ", stdout); fflush(stdout);
+            fgets(id, sizeof(id), stdin);
+            id[strcspn(id, "\r\n")] = '\0';
+            fputs("추가할 사용자 PW: ", stdout); fflush(stdout);
+            fgets(pw, sizeof(pw), stdin);
+            pw[strcspn(pw, "\r\n")] = '\0';
+            snprintf(cmd, BUF_SIZE, "6 %s %s", id, pw);
+        }
+        else if (strcmp(cmd, "7") == 0) {
+            fputs("삭제할 사용자 ID: ", stdout); fflush(stdout);
+            fgets(id, sizeof(id), stdin);
+            id[strcspn(id, "\r\n")] = '\0';
+            fputs("삭제할 사용자 PW: ", stdout); fflush(stdout);
+            fgets(pw, sizeof(pw), stdin);
+            pw[strcspn(pw, "\r\n")] = '\0';
+            snprintf(cmd, BUF_SIZE, "7 %s %s", id, pw);
+        }
+        else if (strcmp(cmd, "8") == 0) {
+            // 종료 명령 전송 후 루프 탈출
+            if (send(sock, "8", 1, 0) == SOCKET_ERROR)
+                ErrorHandling("send() error");
+            break;
         }
 
-        printf("클라이언트 연결됨: %s:%d\n", 
-               inet_ntoa(client_addr.sin_addr), 
-               ntohs(client_addr.sin_port));
-
-        // 클라이언트 처리
-        handle_client(client_socket);
-    }
-
-    closesocket(server_socket);
+    closesocket(sock);
     WSACleanup();
     return 0;
-}
-
-void handle_client(SOCKET client_socket) {
-    char buffer[MAX_BUFFER];
-    int bytes_received;
-
-    while (1) {
-        bytes_received = recv(client_socket, buffer, MAX_BUFFER - 1, 0);
-        if (bytes_received <= 0) {
-            printf("클라이언트 연결 종료\n");
-            break;
-        }
-
-        buffer[bytes_received] = '\0';
-        printf("수신된 데이터: %s\n", buffer);
-
-        // 프로토콜 처리
-        if (strncmp(buffer, "lo/", 3) == 0) {
-            process_login(buffer, client_socket);
-        }
-        else if (strncmp(buffer, "new/", 4) == 0) {
-            process_register(buffer, client_socket);
-        }
-        else if (strncmp(buffer, "UF/", 3) == 0) {
-            process_user_update(buffer, client_socket);
-        }
-        else if (strncmp(buffer, "BI/", 3) == 0) {
-            process_insurance_info(buffer, client_socket);
-        }
-        else if (strncmp(buffer, "BS/", 3) == 0) {
-            process_insurance_info(buffer, client_socket);
-        }
-    }
-
-    closesocket(client_socket);
-}
-
-void process_login(char* buffer, SOCKET client_socket) {
-    char* token;
-    char id[MAX_INFO_LENGTH];
-    char password[MAX_INFO_LENGTH];
-    char response[MAX_BUFFER];
-
-    // 프로토콜 파싱
-    token = strtok(buffer, "/");
-    token = strtok(NULL, "/");  // ID
-    strcpy(id, token);
-    token = strtok(NULL, "/");  // PW
-    strcpy(password, token);
-
-    // 사용자 인증
-    for (int i = 0; i < user_count; i++) {
-        if (strcmp(users[i].id, id) == 0 && strcmp(users[i].password, password) == 0) {
-            sprintf(response, "SUCCESS/%s/%s/%s/%s", 
-                    users[i].car_number, 
-                    users[i].car_type, 
-                    users[i].insurance_company,
-                    users[i].id);
-            send(client_socket, response, strlen(response), 0);
-            printf("사용자 로그인 성공: %s\n", id);
-            return;
-        }
-    }
-
-    // 로그인 실패
-    strcpy(response, "FAIL");
-    send(client_socket, response, strlen(response), 0);
-    printf("로그인 실패: %s\n", id);
-}
-
-void process_register(char* buffer, SOCKET client_socket) {
-    char* token;
-    char response[MAX_BUFFER];
-    USER_DATA new_user;
-
-    // 프로토콜 파싱
-    token = strtok(buffer, "/");
-    token = strtok(NULL, "/");  // ID
-    strcpy(new_user.id, token);
-    token = strtok(NULL, "/");  // PW
-    strcpy(new_user.password, token);
-    token = strtok(NULL, "/");  // 차량번호
-    strcpy(new_user.car_number, token);
-    token = strtok(NULL, "/");  // 차 종류
-    strcpy(new_user.car_type, token);
-    token = strtok(NULL, "/");  // 보험사
-    strcpy(new_user.insurance_company, token);
-
-    // ID 중복 체크
-    for (int i = 0; i < user_count; i++) {
-        if (strcmp(users[i].id, new_user.id) == 0) {
-            strcpy(response, "FAIL/ID_EXISTS");
-            send(client_socket, response, strlen(response), 0);
-            return;
-        }
-    }
-
-    // 새 사용자 추가
-    users[user_count++] = new_user;
-    save_user_data();
-
-    strcpy(response, "SUCCESS");
-    send(client_socket, response, strlen(response), 0);
-    printf("새 사용자 등록: %s\n", new_user.id);
-}
-
-void load_user_data() {
-    FILE* file = fopen("C:\\Coding\\project\\project02\\users.txt", "r");
-    if (file == NULL) {
-        printf("사용자 데이터 파일을 열 수 없습니다.\n");
-        return;
-    }
-
-    char line[MAX_BUFFER];
-    while (fgets(line, sizeof(line), file) && user_count < MAX_USERS) {
-        char* token = strtok(line, "/");
-        strcpy(users[user_count].id, token);
-        token = strtok(NULL, "/");
-        strcpy(users[user_count].password, token);
-        token = strtok(NULL, "/");
-        strcpy(users[user_count].car_number, token);
-        token = strtok(NULL, "/");
-        strcpy(users[user_count].car_type, token);
-        token = strtok(NULL, "/");
-        strcpy(users[user_count].insurance_company, token);
-        user_count++;
-    }
-
-    fclose(file);
-}
-
-void save_user_data() {
-    FILE* file = fopen("C:\\Coding\\project\\project02\\users.txt", "w");
-    if (file == NULL) {
-        printf("사용자 데이터 파일을 열 수 없습니다.\n");
-        return;
-    }
-
-    for (int i = 0; i < user_count; i++) {
-        fprintf(file, "%s/%s/%s/%s/%s\n",
-                users[i].id,
-                users[i].password,
-                users[i].car_number,
-                users[i].car_type,
-                users[i].insurance_company);
-    }
-
-    fclose(file);
-}
-
-void process_user_update(char* buffer, SOCKET client_socket) {
-    char* token;
-    char id[MAX_INFO_LENGTH];
-    char update_type[MAX_INFO_LENGTH];
-    char new_value[MAX_INFO_LENGTH];
-    char response[MAX_BUFFER];
-
-    // 프로토콜 파싱
-    token = strtok(buffer, "/");
-    token = strtok(NULL, "/");  // 업데이트 타입
-    strcpy(update_type, token);
-    token = strtok(NULL, "/");  // ID
-    strcpy(id, token);
-    token = strtok(NULL, "/");  // 새로운 값
-    if (token != NULL) {
-        strcpy(new_value, token);
-    }
-
-    // 사용자 찾기
-    int user_index = -1;
-    for (int i = 0; i < user_count; i++) {
-        if (strcmp(users[i].id, id) == 0) {
-            user_index = i;
-            break;
-        }
-    }
-
-    if (user_index == -1) {
-        strcpy(response, "FAIL/USER_NOT_FOUND");
-        send(client_socket, response, strlen(response), 0);
-        return;
-    }
-
-    // 업데이트 타입에 따른 처리
-    switch (update_type[0]) {
-        case '1':  // 비밀번호 변경
-            strcpy(users[user_index].password, new_value);
-            break;
-        case '2':  // 차 종류 변경
-            strcpy(users[user_index].car_type, new_value);
-            break;
-        case '3':  // 차량번호 변경
-            strcpy(users[user_index].car_number, new_value);
-            break;
-        case '4':  // 보험사 변경
-            strcpy(users[user_index].insurance_company, new_value);
-            break;
-        case '5':  // 사용자 삭제
-            for (int i = user_index; i < user_count - 1; i++) {
-                users[i] = users[i + 1];
-            }
-            user_count--;
-            break;
-    }
-
-    save_user_data();
-    strcpy(response, "SUCCESS");
-    send(client_socket, response, strlen(response), 0);
-}
-
-void process_insurance_info(char* buffer, SOCKET client_socket) {
-    char* token;
-    char id[MAX_INFO_LENGTH];
-    char info_type[MAX_INFO_LENGTH];
-    char response[MAX_BUFFER];
-    char insurance_file[MAX_BUFFER];
-    char line[MAX_BUFFER];
-    FILE* file;
-
-    // 프로토콜 파싱
-    token = strtok(buffer, "/");
-    token = strtok(NULL, "/");  // 정보 타입
-    strcpy(info_type, token);
-    token = strtok(NULL, "/");  // ID
-    strcpy(id, token);
-
-    // 사용자의 보험사 찾기
-    char insurance_company[MAX_INFO_LENGTH] = "";
-    for (int i = 0; i < user_count; i++) {
-        if (strcmp(users[i].id, id) == 0) {
-            strcpy(insurance_company, users[i].insurance_company);
-            break;
-        }
-    }
-
-    if (strlen(insurance_company) == 0) {
-        strcpy(response, "FAIL/USER_NOT_FOUND");
-        send(client_socket, response, strlen(response), 0);
-        return;
-    }
-
-    // 보험사 파일 이름 설정
-    if (strcmp(insurance_company, "삼성화재") == 0) {
-        strcpy(insurance_file, "samsung.txt");
-    }
-    else if (strcmp(insurance_company, "DB손해보험") == 0) {
-        strcpy(insurance_file, "db.txt");
-    }
-    else if (strcmp(insurance_company, "한화손해보험") == 0) {
-        strcpy(insurance_file, "hanwha.txt");
-    }
-    else if (strcmp(insurance_company, "KB손해보험") == 0) {
-        strcpy(insurance_file, "kb.txt");
-    }
-
-    // 보험사 정보 파일 읽기
-    file = fopen(insurance_file, "r");
-    if (file == NULL) {
-        strcpy(response, "FAIL/FILE_NOT_FOUND");
-        send(client_socket, response, strlen(response), 0);
-        return;
-    }
-
-    // 요청된 정보 찾기
-    int found = 0;
-    while (fgets(line, sizeof(line), file)) {
-        if (strstr(line, info_type) != NULL) {
-            found = 1;
-            strcpy(response, "SUCCESS/");
-            strcat(response, line);
-            send(client_socket, response, strlen(response), 0);
-            break;
-        }
-    }
-
-    if (!found) {
-        strcpy(response, "FAIL/INFO_NOT_FOUND");
-        send(client_socket, response, strlen(response), 0);
-    }
-
-    fclose(file);
-}
-
-void process_accident_info(char* buffer, SOCKET client_socket) {
-    char* token;
-    char id[MAX_INFO_LENGTH];
-    char response[MAX_BUFFER];
-    ACCIDENT_DATA new_accident;
-
-    // 프로토콜 파싱
-    token = strtok(buffer, "/");
-    token = strtok(NULL, "/");  // ID
-    strcpy(new_accident.id, token);
-    token = strtok(NULL, "/");  // 사고 날짜
-    strcpy(new_accident.accident_date, token);
-    token = strtok(NULL, "/");  // 사고 유형
-    strcpy(new_accident.accident_type, token);
-    token = strtok(NULL, "/");  // 사고 설명
-    strcpy(new_accident.accident_description, token);
-    token = strtok(NULL, "/");  // 가해자/피해자
-    strcpy(new_accident.accident_role, token);
-
-    // 사고 정보 저장
-    accidents[accident_count++] = new_accident;
-    save_accident_data();
-
-    strcpy(response, "SUCCESS");
-    send(client_socket, response, strlen(response), 0);
-}
-
-void load_accident_data() {
-    FILE* file = fopen("C:\\Coding\\project\\project02\\accident.txt", "r");
-    if (file == NULL) {
-        printf("사고 데이터 파일을 열 수 없습니다.\n");
-        return;
-    }
-
-    char line[MAX_BUFFER];
-    while (fgets(line, sizeof(line), file) && accident_count < MAX_ACCIDENTS) {
-        char* token = strtok(line, "/");
-        strcpy(accidents[accident_count].id, token);
-        token = strtok(NULL, "/");
-        strcpy(accidents[accident_count].accident_date, token);
-        token = strtok(NULL, "/");
-        strcpy(accidents[accident_count].accident_type, token);
-        token = strtok(NULL, "/");
-        strcpy(accidents[accident_count].accident_description, token);
-        token = strtok(NULL, "/");
-        strcpy(accidents[accident_count].accident_role, token);
-        accident_count++;
-    }
-
-    fclose(file);
-}
-
-void save_accident_data() {
-    FILE* file = fopen("C:\\Coding\\project\\project02\\accident.txt", "w");
-    if (file == NULL) {
-        printf("사고 데이터 파일을 열 수 없습니다.\n");
-        return;
-    }
-
-    for (int i = 0; i < accident_count; i++) {
-        fprintf(file, "%s/%s/%s/%s/%s\n",
-                accidents[i].id,
-                accidents[i].accident_date,
-                accidents[i].accident_type,
-                accidents[i].accident_description,
-                accidents[i].accident_role);
-    }
-
-    fclose(file);
 }
