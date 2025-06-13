@@ -3,12 +3,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include <process.h>
+#include <ctype.h>
+#include <errno.h>
 #pragma comment(lib, "ws2_32.lib")
 
-
+#define SERVER_IP   "220.89.224.138"
 #define SERVER_PORT 5548
-#define BUF_SIZE    256
+#define BUF_SIZE    1000
+#define ACCIDENT_LAW_FILE "C:\\Coding\\project\\program02\\accident_law.txt"
+
+int login(SOCKET sock, char* user_ins_company);
+void show_accident_guide(SOCKET sock, const char* user_ins_company);
 
 void ErrorHandling(const char* msg) {
     fputs(msg, stderr);
@@ -44,7 +50,7 @@ int register_user(SOCKET sock) {
     
     // 차종류 입력
     while (1) {
-        printf("\n차종류 선택하세요.\n");
+        printf("\n차종류 선택하세요(숫자).\n");
         printf("1. SUV\n");
         printf("2. 승용차\n");
         printf("3. 트럭\n");
@@ -64,7 +70,7 @@ int register_user(SOCKET sock) {
     
     // 보험사 입력
     while (1) {
-        printf("\n보험사 선택\n");
+        printf("\n보험사 선택(숫자)\n");
         printf("1. 삼성화재\n");
         printf("2. 한화손해보험\n");
         printf("3. KB손해보험\n");
@@ -307,7 +313,7 @@ void update_user_info(SOCKET sock, const char* user_id) {
 }
 
 // 초기 메뉴 함수
-void show_initial_menu(SOCKET sock) {
+void show_initial_menu(SOCKET sock, char* user_ins_company) {
     while (1) {
         printf("\n=== 교통사고 처리 안내 시스템 ===\n");
         printf("1. 로그인\n");
@@ -321,7 +327,7 @@ void show_initial_menu(SOCKET sock) {
         
         switch (choice) {
             case 1: // 로그인
-                if (login(sock)) {
+                if (login(sock, user_ins_company)) {
                     return; // 로그인 성공 시 함수 종료
                 }
                 break;
@@ -329,7 +335,7 @@ void show_initial_menu(SOCKET sock) {
             case 2: // 회원가입
                 if (register_user(sock)) {
                     // 회원가입 성공 후 로그인 화면으로 자동 전환
-                    if (login(sock)) {
+                    if (login(sock, user_ins_company)) {
                         return;
                     }
                 }
@@ -342,37 +348,45 @@ void show_initial_menu(SOCKET sock) {
                 exit(0);
                 
             default:
-                printf("\n잘못된 선택입니다.\n");
+                printf("\n잘못된 선택입니다. 다시 입력하세요!\n");
         }
     }
 }
 
-void accident_data(SOCKET client_socket, const char* id) {
+void accident_data(SOCKET sock, const char* id) {
+    char when[20], what[20], how[200], role[20];
     char buffer[BUF_SIZE];
-    char when[20], what[20], how[200], fault[20];
 
-    printf("사고 발생 일시: ");
-    fgets(when, sizeof(when), stdin);
-    when[strcspn(when, "\r\n")] = '\0';
+    printf("\n=== 사고 정보 입력 ===\n");
+    printf("언제: ");
+    fgets(when, sizeof(when), stdin); when[strcspn(when, "\r\n")] = '\0';
 
-    printf("사고 장소: ");
-    fgets(what, sizeof(what), stdin);
-    what[strcspn(what, "\r\n")] = '\0';
+    printf("무엇을: ");
+    fgets(what, sizeof(what), stdin); what[strcspn(what, "\r\n")] = '\0';
 
-    printf("사고 내용: ");
-    fgets(how, sizeof(how), stdin);
-    how[strcspn(how, "\r\n")] = '\0';
+    printf("어떻게: ");
+    fgets(how, sizeof(how), stdin); how[strcspn(how, "\r\n")] = '\0';
 
-    printf("가해자/피해자 (선택): ");
-    fgets(fault, sizeof(fault), stdin);
-    fault[strcspn(fault, "\r\n")] = '\0';
+    printf("가해자or피해자: ");
+    fgets(role, sizeof(role), stdin); role[strcspn(role, "\r\n")] = '\0';
 
-    // 서버에 사고 정보 전송
-    sprintf(buffer, "%s/%s/%s/%s/%s", id, when, what, how, fault);
-    send(client_socket, buffer, strlen(buffer), 0);
+    // 큐형식으로 입력받은 정보를 서버에 전송
+    snprintf(buffer, sizeof(buffer), "AI/%s/%s/%s/%s/%s", id, when, what, how, role);
+    if (send(sock, buffer, strlen(buffer), 0) == SOCKET_ERROR) {
+        ErrorHandling("사고 정보 전송 오류");
+    }
+
+    // 서버 응답 수신
+    int len = recv(sock, buffer, sizeof(buffer)-1, 0);
+    if (len > 0) {
+        buffer[len] = '\0';
+        printf("서버 응답: %s\n", buffer);
+    } else {
+        printf("서버 응답 수신 실패\n");
+    }
 }
 
-void law_data(SOCKET client_socket) {
+void LAW_data(SOCKET client_socket) {
     char buffer[BUF_SIZE];
     // 서버에 LAW 명령어 전송
     strcpy(buffer, "LAW");
@@ -386,13 +400,74 @@ void law_data(SOCKET client_socket) {
     printf("\n[12대 중과실 법률 안내]\n%s\n", buffer);
 }
 
+void show_accident_guide(SOCKET sock, const char* user_ins_company) {
+    int choice;
+    const char* type_names[] = {"", "대인배상", "대물배상", "자기신체사고", "자동차상해", "자기차량손해"};
+    printf("\n================ 보험사 사고 유형별 안내 메뉴 ================\n");
+    printf(" 1. 대인배상\n 2. 대물배상\n 3. 자기신체사고\n 4. 자동차상해\n 5. 자기차량손해\n");
+    printf("============================================================\n");
+    printf("원하는 메뉴(번호)를 선택하세요: ");
+    scanf("%d", &choice); getchar();
+
+    if (choice < 1 || choice > 5) {
+        printf("잘못된 선택입니다.\n");
+        return;
+    }
+
+    char buffer[BUF_SIZE];
+    snprintf(buffer, sizeof(buffer), "BI/%s/%s", user_ins_company, type_names[choice]);
+    if (send(sock, buffer, strlen(buffer), 0) == SOCKET_ERROR) {
+        ErrorHandling("send() error");
+    }
+
+    // 서버 응답 수신 및 출력
+    int len = recv(sock, buffer, sizeof(buffer)-1, 0);
+    if (len > 0) {
+        buffer[len] = '\0';
+        printf("\n[안내]\n%s\n", buffer);
+    } else {
+        printf("서버 응답 수신 실패\n");
+    }
+}
+
+// 보험사 보상안내 인터페이스 함수 추가
+void show_compensation_guide(SOCKET sock, const char* user_ins_company) {
+    int choice;
+    const char* type_names[] = {"", "대인배상", "대물배상", "자기신체사고", "자동차상해", "자기차량손해"};
+    printf("\n================ 보험사 보상 안내 메뉴 ================\n");
+    printf(" 1. 대인배상\n 2. 대물배상\n 3. 자기신체사고\n 4. 자동차상해\n 5. 자기차량손해\n");
+    printf("====================================================\n");
+    printf("원하는 메뉴(번호)를 선택하세요: ");
+    scanf("%d", &choice); getchar();
+
+    if (choice < 1 || choice > 5) {
+        printf("잘못된 선택입니다.\n");
+        return;
+    }
+
+    char buffer[BUF_SIZE];
+    snprintf(buffer, sizeof(buffer), "BS/%s/%s", user_ins_company, type_names[choice]);
+    if (send(sock, buffer, strlen(buffer), 0) == SOCKET_ERROR) {
+        ErrorHandling("send() error");
+    }
+
+    // 서버 응답 수신 및 출력
+    int len = recv(sock, buffer, sizeof(buffer)-1, 0);
+    if (len > 0) {
+        buffer[len] = '\0';
+        printf("\n[보상 안내]\n%s\n", buffer);
+    } else {
+        printf("서버 응답 수신 실패\n");
+    }
+}
+
 // 메인 메뉴 함수
-void show_main_menu(SOCKET sock, const char* user_id) {
+void show_main_menu(SOCKET sock, const char* user_ins_company) {
     while (1) {
         printf("\n=== 메인 메뉴 ===\n");
         printf("1. 사용자 정보 수정\n");
         printf("2. 사고 정보 입력\n");
-        printf("3. 사고 유형별 안내(보험사)\n");
+        printf("3. 사고 유형별 안내\n");
         printf("4. 보험사 보상 안내\n");
         printf("5. 12대 중과실 법률 안내\n");
         printf("6. 사고대처 안내\n");
@@ -405,29 +480,64 @@ void show_main_menu(SOCKET sock, const char* user_id) {
         
         switch (choice) {
             case 1: // 사용자 정보 수정
-                update_user_info(sock, user_id);
+                update_user_info(sock, user_ins_company);
                 break;
             case 2: //사고 정보 입력
-                accident_data(sock, user_id);
+                accident_data(sock, user_ins_company);
                 break;
             case 3: // 사고 유형별 안내
-                show_accident_guide(sock, user_id);
+                show_accident_guide(sock, user_ins_company);
                 break;
-            case 4: // 보험사 보상 안내
-                // TODO: 사고 정보 입력 기능 구현
-                printf("사고 정보 입력 기능은 아직 구현되지 않았습니다.\n");
+            case 4:
+                show_compensation_guide(sock, user_ins_company);
                 break;
             case 5: // 12대 중과실 법률 안내
-                law_data(sock);
+                LAW_data(sock);
                 break;
-            case 6: // 사고대처 안내
-                // ... 기존 코드 ...
+            case 6:
+                printf("사고대처 안내는 추후 구현 예정입니다.\n");
                 break;
             case 7: // 프로그램 종료
-                return 0;
+                printf("프로그램을 종료합니다.\n");
+                closesocket(sock);
+                WSACleanup();
+                exit(0);
             default:
                 printf("\n잘못된 선택입니다.\n");
         }
+    }
+}
+
+// 로그인 함수 구현 추가
+int login(SOCKET sock, char* user_ins_company) {
+    char id[20], pw[20], buffer[BUF_SIZE];
+    printf("\n=== 로그인 ===\n");
+    printf("ID: ");
+    if (!fgets(id, sizeof(id), stdin)) ErrorHandling("입력 오류");
+    id[strcspn(id, "\r\n")] = '\0';
+    printf("비밀번호: ");
+    if (!fgets(pw, sizeof(pw), stdin)) ErrorHandling("입력 오류");
+    pw[strcspn(pw, "\r\n")] = '\0';
+    sprintf(buffer, "lo/%s/%s", id, pw);
+    if (send(sock, buffer, strlen(buffer), 0) == SOCKET_ERROR)
+        ErrorHandling("send() error");
+    int strLen = recv(sock, buffer, BUF_SIZE - 1, 0);
+    if (strLen == SOCKET_ERROR)
+        ErrorHandling("recv() error");
+    buffer[strLen] = '\0';
+    if (strcmp(buffer, "0") == 0 || strcmp(buffer, "FAIL") == 0) {
+        printf("로그인 실패!\n");
+        return 0;
+    } else {
+        // 서버에서 보험사명 등 추가 정보가 오면 파싱해서 저장
+        // 예: SUCCESS/차량번호/차종류/보험사/ID
+        char* token = strtok(buffer, "/"); // SUCCESS
+        token = strtok(NULL, "/"); // 차량번호
+        token = strtok(NULL, "/"); // 차종류
+        token = strtok(NULL, "/"); // 보험사
+        if (token) strcpy(user_ins_company, token);
+        printf("로그인 성공!\n");
+        return 1;
     }
 }
 
@@ -437,138 +547,23 @@ int main(void) {
     struct sockaddr_in servAddr;
     char buffer[BUF_SIZE];
     int strLen;
-
-    char id[20], pw[20], cmd[BUF_SIZE];
-    char server_ip[20];
-
-    // 콘솔 UTF-8 설정
+    char user_ins_company[32] = "";
     SetConsoleOutputCP(CP_UTF8);
-
-    // 서버 IP 입력
-    printf("서버 IP 주소를 입력하세요: ");
-    if (!fgets(server_ip, sizeof(server_ip), stdin))
-        ErrorHandling("IP 입력 오류");
-    server_ip[strcspn(server_ip, "\r\n")] = '\0';
-
-    // WinSock 초기화
     if (WSAStartup(MAKEWORD(2,2), &wsaData) != 0)
         ErrorHandling("WSAStartup() error");
-
-    // 소켓 생성
     sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (sock == INVALID_SOCKET)
         ErrorHandling("socket() error");
-
-    // 서버 주소 설정
     memset(&servAddr, 0, sizeof(servAddr));
     servAddr.sin_family      = AF_INET;
-    servAddr.sin_addr.s_addr = inet_addr(server_ip);
+    servAddr.sin_addr.s_addr = inet_addr(SERVER_IP);
     servAddr.sin_port        = htons(SERVER_PORT);
-
-    // 서버에 연결
     if (connect(sock, (SOCKADDR*)&servAddr, sizeof(servAddr)) == SOCKET_ERROR)
         ErrorHandling("connect() error");
-
     fputs("서버에 연결되었습니다.\n\n", stdout);
-    
-    // 초기 메뉴 표시
-    show_initial_menu(sock);
-
-  for (;;) {
-        fputs("\n메뉴:\n", stdout);
-        fputs("1. 사용자 정보 수정\n", stdout);
-        fputs("2. 사고 정보  입력\n", stdout);
-        fputs("3. 사고 유형별 안내\n", stdout);
-        fputs("4. 보험 정보 안내\n", stdout);
-        fputs("5. 12대 중과실 법률 안내\n", stdout);
-        fputs("6. 사용자 추가\n", stdout);
-        fputs("7. 사용자 삭제\n", stdout);
-        fputs("8. 종료\n", stdout);
-        fputs("선택: ", stdout); fflush(stdout);
-
-        if (!fgets(cmd, sizeof(cmd), stdin))
-            break;
-        cmd[strcspn(cmd, "\r\n")] = '\0';
-
-        // 옵션별 명령어 구성
-        if (strcmp(cmd, "1") == 0) {
-            printf("1번. 비밀번호 변경");
-            printf("2번. 차 번호 수정");
-            printf("3번. 차종류 수정");
-            printf("4번. 보험사 수정");
-            printf("5번. 전체정보 수정");
-            
-            fputs(": ", stdout); fflush(stdout);
-            fgets(buffer, sizeof(buffer), stdin);
-            buffer[strcspn(buffer, "\r\n")] = '\0';
-            snprintf(cmd, BUF_SIZE, "1 %s", buffer);
-        }
-        else if (strcmp(cmd, "2") == 0) {
-            char title[100], author[100], rating[20];
-            fputs(": ", stdout); fflush(stdout);
-            fgets(title, sizeof(title), stdin);
-            title[strcspn(title, "\r\n")] = '\0';
-            fputs("저자: ", stdout); fflush(stdout);
-            fgets(author, sizeof(author), stdin);
-            author[strcspn(author, "\r\n")] = '\0';
-            fputs("평점: ", stdout); fflush(stdout);
-            fgets(rating, sizeof(rating), stdin);
-            rating[strcspn(rating, "\r\n")] = '\0';
-            snprintf(cmd, BUF_SIZE, "2 %s %s %s", title, author, rating);
-        }
-        else if (strcmp(cmd, "3") == 0) {
-            fputs("삭제 키워드: ", stdout); fflush(stdout);
-            fgets(buffer, sizeof(buffer), stdin);
-            buffer[strcspn(buffer, "\r\n")] = '\0';
-            snprintf(cmd, BUF_SIZE, "3 %s", buffer);
-        }
-        else if (strcmp(cmd, "4") == 0) {
-            char key[100], newTitle[100], newAuthor[100], newRating[20];
-            fputs("검색 키워드: ", stdout); fflush(stdout);
-            fgets(key, sizeof(key), stdin);
-            key[strcspn(key, "\r\n")] = '\0';
-            fputs("새 제목: ", stdout); fflush(stdout);
-            fgets(newTitle, sizeof(newTitle), stdin);
-            newTitle[strcspn(newTitle, "\r\n")] = '\0';
-            fputs("새 저자: ", stdout); fflush(stdout);
-            fgets(newAuthor, sizeof(newAuthor), stdin);
-            newAuthor[strcspn(newAuthor, "\r\n")] = '\0';
-            fputs("새 평점: ", stdout); fflush(stdout);
-            fgets(newRating, sizeof(newRating), stdin);
-            newRating[strcspn(newRating, "\r\n")] = '\0';
-            snprintf(cmd, BUF_SIZE, "4 %s %s %s %s",
-                     key, newTitle, newAuthor, newRating);
-        }
-        else if (strcmp(cmd, "5") == 0) {
-            strcpy(cmd, "5");
-        }
-        else if (strcmp(cmd, "6") == 0) {
-            fputs("추가할 사용자 ID: ", stdout); fflush(stdout);
-            fgets(id, sizeof(id), stdin);
-            id[strcspn(id, "\r\n")] = '\0';
-            fputs("추가할 사용자 PW: ", stdout); fflush(stdout);
-            fgets(pw, sizeof(pw), stdin);
-            pw[strcspn(pw, "\r\n")] = '\0';
-            snprintf(cmd, BUF_SIZE, "6 %s %s", id, pw);
-        }
-        else if (strcmp(cmd, "7") == 0) {
-            fputs("삭제할 사용자 ID: ", stdout); fflush(stdout);
-            fgets(id, sizeof(id), stdin);
-            id[strcspn(id, "\r\n")] = '\0';
-            fputs("삭제할 사용자 PW: ", stdout); fflush(stdout);
-            fgets(pw, sizeof(pw), stdin);
-            pw[strcspn(pw, "\r\n")] = '\0';
-            snprintf(cmd, BUF_SIZE, "7 %s %s", id, pw);
-        }
-        else if (strcmp(cmd, "8") == 0) {
-            // 종료 명령 전송 후 루프 탈출
-            if (send(sock, "8", 1, 0) == SOCKET_ERROR)
-                ErrorHandling("send() error");
-            break;
-        }
-
+    show_initial_menu(sock, user_ins_company);
+    show_main_menu(sock, user_ins_company);
     closesocket(sock);
     WSACleanup();
     return 0;
-  }
 }
