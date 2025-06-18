@@ -1,0 +1,8 @@
+ID/PW/차번호/차종류/보험사
+qwerqwer/qwer/124가2332/승용차/삼성화재
+asdf/asdf/1212바5432/SUV/한화손해보험
+qweqwe/qweqwe/123가3444/대형차/삼성화재
+aaaa/aaaa/3344나1122/승용차/KB손해보험
+bbbb/qwer/987하987/승용차/삼성화재
+qqqq/qqqq/456마456/대형차/삼성화재
+asd/qqwwee/4545사4545/대형차/삼성화재

@@ -1,49 +1,104 @@
-// 프로젝트: 교통사고 처리 안내 시스템
-// 작성자: 학번 : 2022243090  이름 : 김성연
-
-#include <winsock2.h>
-#include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <Windows.h>
 #include <process.h>
+#include <time.h>
+#include <ctype.h>
+#include <errno.h> // for strerror
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <locale.h>
+#pragma comment(lib, "ws2_32.lib") 
+char* strtok_r(char* str, const char* delim, char** saveptr) {
+    char* result;
+    if (str == NULL) {
+        str = *saveptr;
+    }
+    if (str == NULL) {
+        return NULL;
+    }
 
-#pragma comment(lib, "ws2_32.lib")
+    // Skip leading delimiters
+    str += strspn(str, delim);
+    if (*str == '\0') {
+        *saveptr = NULL;
+        return NULL;
+    }
 
-#define MAX_BUFFER 1024
-#define MAX_USERS 100
-#define MAX_ACCIDENTS 100
+    result = str;
+    // Find the next delimiter or end of string
+    str += strcspn(str, delim);
+
+    if (*str != '\0') {
+        *str = '\0';
+        *saveptr = str + 1;
+    } else {
+        *saveptr = NULL;
+    }
+    return result;
+}
+
+#define PORT_NUM 5050 // 서버 포트 번호
+#define BUF_SIZE 1024
+#define MAX_USERS 1000
+#define MAX_ACCIDENTS 1000
 #define MAX_INFO_LENGTH 30
-#define USER_FILE "C:\\Coding\\project\\project02\\users.txt" // 사용자 정보 파일 경로
-#define USER_TEMP_FILE "C:\\Coding\\project\\project02\\users_temp.txt"// 사용자 정보 임시 파일 경로
+#define MAX_CLNT 100 // MAX_CLNT 정의 추가
+#define USER_FILE "users02.txt" // 사용자 정보 파일 경로
 #define ACCIDENT_FILE "C:\\Coding\\project\\project02\\accident.txt"// 사고 정보 입력 파일 경로
 #define SAMSUNG_ACCIDENT_FILE "C:\\Coding\\project\\project02\\samsung_AC.txt"// 삼성화재 사고 정보 파일 경로
 #define SAMSUNG_CPS_FILE "C:\\Coding\\project\\project02\\samsung_CPS.txt" // 삼성화재 보험안내 정보 파일 경로
-#define HANWHA_ACCIDENT_FILE "C:\\Coding\\project\\project02\\hanwha_AC.txt"    // 한화손해보험 사고 정보 파일 경로
-#define HANWHA_CPS_FILE "C:\\Coding\\project\\project02\\hanwha_CPS.txt" // 한화손해보험 보험안내 정보 파일 경로
+#define HANWHA_ACCIDENT_FILE "C:\\Coding\\project\\project02\\hanhwa_AC.txt"    // 한화손해보험 사고 정보 파일 경로
+#define HANWHA_CPS_FILE "C:\\Coding\\project\\project02\\hanhwa_CPS.txt" // 한화손해보험 보험안내 정보 파일 경로
 #define KB_ACCIDENT_FILE "C:\\Coding\\project\\project02\\kb_AC.txt" // KB손해보험 사고 정보 파일 경로
 #define KB_CPS_FILE "C:\\Coding\\project\\project02\\kb_CPS.txt" // KB손해보험 보험안내 정보 파일 경로
 #define DB_ACCIDENT_FILE "C:\\Coding\\project\\project02\\db_AC.txt" // DB손해보험 사고 정보 파일 경로
 #define DB_CPS_FILE "C:\\Coding\\project\\project02\\db_CPS.txt" // DB손해보험 보험안내 정보 파일 경로
-#define ACCIDENT_LAW_FILE "C:\\Coding\\project\\program02\\accident_law.txt" // 사고 법률 안내 파일 경로
+#define ACCIDENT_LAW_FILE "C:\\Coding\\project\\project02\\accident_law.txt" // 사고 법률 안내 파일 경로
+#define ACCIDENT_GUIDE_FILE "C:\\Coding\\project\\project02\\accident_guide.txt"
 
 
-// 사용자 정보 구조체
+void trim_trailing_newlines(char* str) {
+    size_t len = strlen(str);
+    while (len > 0 && (str[len - 1] == '\n' || str[len - 1] == '\r')) {
+        str[--len] = '\0';
+    }
+}
+
+int stristr(const char* haystack, const char* needle) {
+    while (*haystack) {
+        const char *h = haystack, *n = needle;
+        while (*h && *n && tolower(*h) == tolower(*n)) {
+            h++; n++;
+        }
+        if (!*n) return 1;  // 매칭 성공
+        haystack++;
+    }
+    return 0;  // 매칭 실패
+}
+
+void ErrorHandling(char* msg); 
+
+
+int clientCount = 0;  // 클라이언트 수
+SOCKET clientSocks[MAX_CLNT];  // 클라이언트 소켓 배열
+HANDLE hMutex;  // 스레드 동기화 뮤텍스
+
 typedef struct {
-    char id[MAX_INFO_LENGTH];
-    char password[MAX_INFO_LENGTH];
-    char car_number[MAX_INFO_LENGTH];
-    char car_type[MAX_INFO_LENGTH];
-    char insurance_company[MAX_INFO_LENGTH];
-} USER_DATA;
+    int id[20];
+    char password[20];
+    char car_number[20];
+    char car_type[20];
+    char insurance_company[20];
+}USER_DATA;
 
-// 보험사별 안내 정보 구조체
 typedef struct {
-    char id[MAX_INFO_LENGTH];
-    char accident_date[MAX_INFO_LENGTH];
-    char accident_type[MAX_INFO_LENGTH];
-    char accident_description[MAX_INFO_LENGTH];
-    char accident_role[MAX_INFO_LENGTH];  // 가해자/피해자
+    char id[20];
+    char when[20];
+    char what[20];
+    char how[200];
+    char role[20];  // 가해자/피해자
 } ACCIDENT_DATA;
 
 // 전역 변수
@@ -52,571 +107,1111 @@ ACCIDENT_DATA accidents[MAX_ACCIDENTS];
 int user_count = 0;
 int accident_count = 0;
 
-// 함수 선언
-void handle_client(SOCKET client_socket);
-void process_login(char* buffer, SOCKET client_socket);
-void process_register(char* buffer, SOCKET client_socket);
-void process_user_update(char* buffer, SOCKET client_socket);
-void process_insurance_info(char* buffer, SOCKET client_socket);
-void process_accident_info(char* buffer, SOCKET client_socket);
-void load_user_data();
-void save_user_data();
-void load_accident_data();
-void save_accident_data();
-void accident_data(SOCKET sock, const char* id);
-void process_insurance_compensation_info(char* buffer, SOCKET client_socket);
-int handle_login(const char* id, const char* pw);
-int handle_register(const char* id, const char* pw, const char* car_number, const char* car_type, const char* ins_company);
-void LAW_guide(SOCKET client_socket);
-void LAW_data(SOCKET client_socket);
+// 사용자 정보 캐시 구조체
+typedef struct {
+    char user_id[20];
+    char insurance_company[20];
+    time_t last_updated;
+} USER_CACHE;
 
-int main() {
-    WSADATA wsaData;
-    SOCKET server_socket, client_socket;
-    struct sockaddr_in server_addr, client_addr;
-    int client_addr_size;
+USER_CACHE user_cache[MAX_USERS];
+int cache_count = 0;
 
-    // Winsock 초기화
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        printf("WSAStartup 실패\n");
-        return 1;
-    }
-
-    // 사용자 및 사고 데이터 로드
-    load_user_data();
-    load_accident_data();
-
-    server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_socket == INVALID_SOCKET) {
-        printf("소켓 생성 실패\n");
-        WSACleanup();
-        return 1;
-    }
-
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    server_addr.sin_port = htons(5548);
-
-    if (bind(server_socket, (struct sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR) {
-        printf("바인드 실패\n");
-        closesocket(server_socket);
-        WSACleanup();
-        return 1;
-    }
-
-    if (listen(server_socket, 5) == SOCKET_ERROR) {
-        printf("리스닝 실패\n");
-        closesocket(server_socket);
-        WSACleanup();
-        return 1;
-    }
-
-    printf("서버가 시작되었습니다. 포트: 5548\n");
-
-    while (1) {
-        client_addr_size = sizeof(client_addr);
-        client_socket = accept(server_socket, (struct sockaddr*)&client_addr, &client_addr_size);
-        if (client_socket == INVALID_SOCKET) {
-            printf("클라이언트 연결 실패\n");
-            continue;
+//사용자 보험사 정보 찾기
+int find_user_in_cache(const char* user_id, char* insurance_company_buf, size_t buf_size) {
+    for (int i = 0; i < cache_count; i++) {
+        if (strcmp(user_cache[i].user_id, user_id) == 0) {
+            strncpy(insurance_company_buf, user_cache[i].insurance_company, buf_size - 1);
+            insurance_company_buf[buf_size - 1] = '\0';
+            printf("find_user_in_cache - 캐시에서 찾음: %s -> %s\n", user_id, insurance_company_buf);
+            return 1;
         }
-        // 멀티스레드로 클라이언트 처리
-        _beginthread((void(*)(void*))handle_client, 0, (void*)client_socket);
     }
-
-    closesocket(server_socket);
-    WSACleanup();
-    getchar();
     return 0;
 }
 
-void handle_client(SOCKET client_socket) {
-    char buffer[MAX_BUFFER];
-    int bytes_received;
-
-    while (1) {
-        bytes_received = recv(client_socket, buffer, MAX_BUFFER - 1, 0);
-        if (bytes_received <= 0) {
-            printf("클라이언트 연결 종료\n");
-            break;
-        }
-
-        buffer[bytes_received] = '\0';
-        printf("수신된 데이터: %s\n", buffer);
-
-        // 로그인 요청 처리
-        if (strncmp(buffer, "lo/", 3) == 0) {
-            char id[20], pw[20];
-            if (sscanf(buffer + 3, "%[^/]/%s", id, pw) == 2) {
-                printf("로그인 시도: ID=%s\n", id);
-                int result = handle_login(id, pw);
-                char response[2] = {result + '0', '\0'};
-                send(client_socket, response, 1, 0);
-            }
-        }
-        // 회원가입 요청 처리
-        else if (strncmp(buffer, "new/", 4) == 0) {
-            char id[20], pw[20], car_number[20], car_type[20], ins_company[20];
-            if (sscanf(buffer + 4, "%[^/]/%[^/]/%[^/]/%[^/]/%s", 
-                      id, pw, car_number, car_type, ins_company) == 5) {
-                printf("회원가입 시도: ID=%s\n", id);
-                int result = handle_register(id, pw, car_number, car_type, ins_company);
-                char response[2] = {result + '0', '\0'};
-                send(client_socket, response, 1, 0);
-            }
-        }
-        // 사용자 정보 수정 요청 처리
-        else if (strncmp(buffer, "UF/", 3) == 0) {
-            process_user_update(buffer, client_socket);
-        }
-        else if (strncmp(buffer, "BI/", 3) == 0) {
-            process_insurance_info(buffer, client_socket);
-        }
-        else if (strncmp(buffer, "BS/", 3) == 0) {
-            process_insurance_compensation_info(buffer, client_socket);
-        }
-        else if (strncmp(buffer, "AI/", 3) == 0) {
-            process_accident_info(buffer, client_socket);
-        }
-        else if (strncmp(buffer, "LAW", 3) == 0) {
-            LAW_guide(client_socket);
-        }
-    }
-
-    closesocket(client_socket);
-}
-
-void process_login(char* buffer, SOCKET client_socket) {
-    char* token;
-    char id[MAX_INFO_LENGTH];
-    char password[MAX_INFO_LENGTH];
-    char response[MAX_BUFFER];
-
-    // 프로토콜 파싱
-    token = strtok(buffer, "/");
-    token = strtok(NULL, "/");  // ID
-    strcpy(id, token);
-    token = strtok(NULL, "/");  // PW
-    strcpy(password, token);
-
-    // 사용자 인증
-    for (int i = 0; i < user_count; i++) {
-        if (strcmp(users[i].id, id) == 0 && strcmp(users[i].password, password) == 0) {
-            sprintf(response, "SUCCESS/%s/%s/%s/%s", 
-                    users[i].car_number, 
-                    users[i].car_type, 
-                    users[i].insurance_company,
-                    users[i].id);
-            send(client_socket, response, strlen(response), 0);
-            printf("사용자 로그인 성공: %s\n", id);
+//사용자 정보 추가/업데이트
+void update_user_cache(const char* user_id, const char* insurance_company) {
+    for (int i = 0; i < cache_count; i++) {
+        if (strcmp(user_cache[i].user_id, user_id) == 0) {
+            strncpy(user_cache[i].insurance_company, insurance_company, sizeof(user_cache[i].insurance_company) - 1);
+            user_cache[i].insurance_company[sizeof(user_cache[i].insurance_company) - 1] = '\0';
+            user_cache[i].last_updated = time(NULL);
+            printf("update_user_cache - 캐시 업데이트: %s -> %s\n", user_id, insurance_company);
             return;
         }
     }
 
-    // 로그인 실패
-    strcpy(response, "FAIL");
-    send(client_socket, response, strlen(response), 0);
-    printf("로그인 실패: %s\n", id);
+    if (cache_count < MAX_USERS) {
+        strncpy(user_cache[cache_count].user_id, user_id, sizeof(user_cache[cache_count].user_id) - 1);
+        user_cache[cache_count].user_id[sizeof(user_cache[cache_count].user_id) - 1] = '\0';
+        strncpy(user_cache[cache_count].insurance_company, insurance_company, sizeof(user_cache[cache_count].insurance_company) - 1);
+        user_cache[cache_count].insurance_company[sizeof(user_cache[cache_count].insurance_company) - 1] = '\0';
+        user_cache[cache_count].last_updated = time(NULL);
+        cache_count++;
+        printf("update_user_cache - 새 캐시 추가: %s -> %s\n", user_id, insurance_company);
+    }
 }
 
-void process_register(char* buffer, SOCKET client_socket) {
-    char* token;
-    char response[MAX_BUFFER];
-    USER_DATA new_user;
+// 로그인 인증
+int UserOk(const char* id, const char* password) {
+    printf("DEBUG: UserOk 함수 진입 - ID: %s\n", id);
+    
+    FILE* file = fopen(USER_FILE, "r");
+    if (!file) {
+        printf("DEBUG: UserOk: 파일 열기 실패\n");
+        return 0;
+    }
 
-    // 프로토콜 파싱
-    token = strtok(buffer, "/");
-    token = strtok(NULL, "/");  // ID
-    strcpy(new_user.id, token);
-    token = strtok(NULL, "/");  // PW
-    strcpy(new_user.password, token);
-    token = strtok(NULL, "/");  // 차량번호
-    strcpy(new_user.car_number, token);
-    token = strtok(NULL, "/");  // 차 종류
-    strcpy(new_user.car_type, token);
-    token = strtok(NULL, "/");  // 보험사
-    strcpy(new_user.insurance_company, token);
+    char line[256];
+    int found = 0;
+
+    while (fgets(line, sizeof(line), file)) {
+        line[strcspn(line, "\r\n")] = 0; 
+        
+        char *saveptr;
+        char *current_id = strtok_r(line, "/", &saveptr);
+        if (!current_id) continue;
+
+        if (strcmp(current_id, id) == 0) {
+            char *current_pw = strtok_r(NULL, "/", &saveptr);
+            if (current_pw && strcmp(current_pw, password) == 0) {
+                found = 1;
+                break;
+            }
+        }
+    }
+
+    fclose(file);
+    printf("DEBUG: UserOk: 로그인 %s\n", found ? "성공" : "실패");
+    return found;
+}
+
+// 회원가입
+int handle_new_user(const char* id, const char* password, const char* car_number, 
+                   const char* car_type, const char* insurance) {
+    printf("handle_new_user 함수 진입\n");
+    printf("입력된 정보 - ID: %s, PW: %s, 차량번호: %s, 차종류: %s, 보험사: %s\n", 
+           id, password, car_number, car_type, insurance);
+    printf("USER_FILE 경로: %s\n", USER_FILE);
+
+    if (!id || strlen(id) == 0) {
+        printf("ID가 비어있음\n");
+        return 0;
+    }
+    if (!password || strlen(password) == 0) {
+        printf("비밀번호가 비어있음\n");
+        return 0;
+    }
+    if (!car_number || strlen(car_number) == 0) {
+        printf("차량번호가 비어있음\n");
+        return 0;
+    }
+    if (!car_type || strlen(car_type) == 0) {
+        printf("차종류가 비어있음\n");
+        return 0;
+    }
+    if (!insurance || strlen(insurance) == 0) {
+        printf("보험사가 비어있음\n");
+        return 0;
+    }
 
     // ID 중복 체크
-    for (int i = 0; i < user_count; i++) {
-        if (strcmp(users[i].id, new_user.id) == 0) {
-            strcpy(response, "FAIL/ID_EXISTS");
-            send(client_socket, response, strlen(response), 0);
-            return;
-        }
-    }
-
-    // 새 사용자 추가
-    users[user_count++] = new_user;
-    save_user_data();
-
-    strcpy(response, "회원가입 성공");
-    send(client_socket, response, strlen(response), 0);
-    printf("새 사용자 등록: %s\n", new_user.id);
-}
-
-void load_user_data() {
-    FILE* file = fopen("C:\\Coding\\project\\project02\\users.txt", "r");
-    if (file == NULL) {
-        printf("사용자 데이터 파일을 열 수 없습니다.\n");
-        return;
-    }
-
-    char line[MAX_BUFFER];
-    while (fgets(line, sizeof(line), file) && user_count < MAX_USERS) {
-        char* token = strtok(line, "/");
-        strcpy(users[user_count].id, token);
-        token = strtok(NULL, "/");
-        strcpy(users[user_count].password, token);
-        token = strtok(NULL, "/");
-        strcpy(users[user_count].car_number, token);
-        token = strtok(NULL, "/");
-        strcpy(users[user_count].car_type, token);
-        token = strtok(NULL, "/");
-        strcpy(users[user_count].insurance_company, token);
-        user_count++;
-    }
-
-    fclose(file);
-}
-
-void save_user_data() {
-    FILE* file = fopen(USER_TEMP_FILE, "w");
-    if (file == NULL) {
-        printf("새로운 사용자 정보 파일을 열 수 없습니다.\n");
-        return;
-    }
-
-    for (int i = 0; i < user_count; i++) {
-        fprintf(file, "%s/%s/%s/%s/%s\n",
-                users[i].id,
-                users[i].password,
-                users[i].car_number,
-                users[i].car_type,
-                users[i].insurance_company);
-    }
-
-    fclose(file);
-}
-
-void process_user_update(char* buffer, SOCKET client_socket) {
-    char* token;
-    char id[MAX_INFO_LENGTH];
-    char update_type[MAX_INFO_LENGTH];
-    char new_value[MAX_INFO_LENGTH];
-    char response[MAX_BUFFER];
-
-    // 프로토콜 파싱
-    token = strtok(buffer, "/");
-    token = strtok(NULL, "/");  // 업데이트 타입
-    strcpy(update_type, token);
-    token = strtok(NULL, "/");  // ID
-    strcpy(id, token);
-    token = strtok(NULL, "/");  // 새로운 값
-    if (token != NULL) {
-        strcpy(new_value, token);
-    }
-
-    // 사용자 찾기
-    int user_index = -1;
-    for (int i = 0; i < user_count; i++) {
-        if (strcmp(users[i].id, id) == 0) {
-            user_index = i;
-            break;
-        }
-    }
-
-    if (user_index == -1) {
-        strcpy(response, "FAIL/USER_NOT_FOUND");
-        send(client_socket, response, strlen(response), 0);
-        return;
-    }
-
-    // 업데이트 타입에 따른 처리
-    switch (update_type[0]) {
-        case '1':  // 비밀번호 변경
-            strcpy(users[user_index].password, new_value);
-            break;
-        case '2':  // 차 종류 변경
-            strcpy(users[user_index].car_type, new_value);
-            break;
-        case '3':  // 차량번호 변경
-            strcpy(users[user_index].car_number, new_value);
-            break;
-        case '4':  // 보험사 변경
-            strcpy(users[user_index].insurance_company, new_value);
-            break;
-        case '5':  // 사용자 삭제
-            for (int i = user_index; i < user_count - 1; i++) {
-                users[i] = users[i + 1];
+    printf("USER_FILE 열기 시도 - %s\n", USER_FILE);
+    FILE *file = fopen(USER_FILE, "r");
+    if (file) {
+        char line[256];
+        while (fgets(line, sizeof(line), file)) {
+            line[strcspn(line, "\r\n")] = '\0';  
+            printf("파일에서 읽은 라인: %s\n", line);
+            
+            if (strcmp(line, "ID/PW/차번호/차종류/보험사") == 0) {
+                continue;
             }
-            user_count--;
-            break;
-    }
-
-    save_user_data();
-    strcpy(response, "SUCCESS");
-    send(client_socket, response, strlen(response), 0);
-}
-
-void process_insurance_info(char* buffer, SOCKET client_socket) {
-    char* token;
-    char ins_company[MAX_INFO_LENGTH];
-    char info_type[MAX_INFO_LENGTH];
-    char response[MAX_BUFFER * 10] = ""; // 여러 줄 안내 대비
-    char filename[256];
-    char line[MAX_BUFFER];
-    FILE* file;
-
-    // 프로토콜 파싱: BI/보험사명/항목명
-    token = strtok(buffer, "/"); // "BI"
-    token = strtok(NULL, "/");   // 보험사명
-    if (token) strcpy(ins_company, token); else ins_company[0] = '\0';
-    token = strtok(NULL, "/");   // 항목명
-    if (token) strcpy(info_type, token); else info_type[0] = '\0';
-
-    // 보험사별 파일명 결정
-    if (strcmp(ins_company, "삼성화재") == 0) strcpy(filename, SAMSUNG_ACCIDENT_FILE);
-    else if (strcmp(ins_company, "DB손해보험") == 0) strcpy(filename, DB_ACCIDENT_FILE);
-    else if (strcmp(ins_company, "한화손해보험") == 0) strcpy(filename, HANWHA_ACCIDENT_FILE);
-    else if (strcmp(ins_company, "KB손해보험") == 0) strcpy(filename, KB_ACCIDENT_FILE);
-    else {
-        strcpy(response, "지원하지 않는 보험사입니다.");
-        send(client_socket, response, strlen(response), 0);
-        return;
-    }
-
-    file = fopen(filename, "r");
-    if (!file) {
-        strcpy(response, "보험사 파일을 열 수 없습니다.");
-        send(client_socket, response, strlen(response), 0);
-        return;
-    }
-
-    // 항목명 포함된 줄부터 빈 줄까지 추출
-    int in_section = 0;
-    response[0] = '\0';
-    while (fgets(line, sizeof(line), file)) {
-        if (!in_section) {
-            // 예: "1. 대인배상" 등에서 info_type이 포함된 줄 찾기
-            if (strstr(line, info_type)) {
-                in_section = 1;
-                strcat(response, line);
+            
+            char *saveptr;
+            char *current_id = strtok_r(line, "/", &saveptr);
+            if (current_id && strcmp(current_id, id) == 0) {
+                printf("ID 중복 - %s\n", id);
+                fclose(file);
+                return 0; 
             }
-            continue;
         }
-        if (in_section) {
-            // 빈 줄(\n, \r\n)에서 종료
-            if (strcmp(line, "\n") == 0 || strcmp(line, "\r\n") == 0) break;
-            strcat(response, line);
-        }
+        fclose(file);
     }
-    fclose(file);
-
-    if (strlen(response) == 0) strcpy(response, "해당 항목 안내가 없습니다.");
-    send(client_socket, response, strlen(response), 0);
-}
-
-void process_accident_info(char* buffer, SOCKET client_socket) {
-    char* token;
-    ACCIDENT_DATA new_accident;
-    char response[MAX_BUFFER];
-
-    // 프로토콜 파싱: AI/ID/언제/무엇을/어떻게/가해자or피해자
-    token = strtok(buffer, "/"); // "AI"
-    token = strtok(NULL, "/");   // ID
-    if (token) strcpy(new_accident.id, token); else new_accident.id[0] = '\0';
-    token = strtok(NULL, "/");   // 언제
-    if (token) strcpy(new_accident.accident_date, token); else new_accident.accident_date[0] = '\0';
-    token = strtok(NULL, "/");   // 무엇을
-    if (token) strcpy(new_accident.accident_type, token); else new_accident.accident_type[0] = '\0';
-    token = strtok(NULL, "/");   // 어떻게
-    if (token) strcpy(new_accident.accident_description, token); else new_accident.accident_description[0] = '\0';
-    token = strtok(NULL, "/");   // 가해자or피해자
-    if (token) strcpy(new_accident.accident_role, token); else new_accident.accident_role[0] = '\0';
-
-    // 사고 정보 저장
-    if (accident_count < MAX_ACCIDENTS) {
-        accidents[accident_count++] = new_accident;
-        save_accident_data();
-        strcpy(response, "SUCCESS");
-    } else {
-        strcpy(response, "FAIL/ACCIDENT_FULL");
-    }
-    send(client_socket, response, strlen(response), 0);
-}
-
-void load_accident_data() {
-    FILE* file = fopen(ACCIDENT_FILE, "r");
-    if (file == NULL) {
-        printf("사고 데이터 파일을 열 수 없습니다.\n");
-        return;
-    }
-
-    char line[MAX_BUFFER];
-    while (fgets(line, sizeof(line), file) && accident_count < MAX_ACCIDENTS) {
-        char* token = strtok(line, "/");
-        strcpy(accidents[accident_count].id, token);
-        token = strtok(NULL, "/");
-        strcpy(accidents[accident_count].accident_date, token);
-        token = strtok(NULL, "/");
-        strcpy(accidents[accident_count].accident_type, token);
-        token = strtok(NULL, "/");
-        strcpy(accidents[accident_count].accident_description, token);
-        token = strtok(NULL, "/");
-        strcpy(accidents[accident_count].accident_role, token);
-        accident_count++;
-    }
-
-    fclose(file);
-}
-
-void save_accident_data() {
-    FILE* file = fopen(ACCIDENT_FILE, "w");
-    if (file == NULL) {
-        printf("사고 데이터 파일을 열 수 없습니다.\n");
-        return;
-    }
-
-    for (int i = 0; i < accident_count; i++) {
-        fprintf(file, "%s/%s/%s/%s/%s\n",
-                accidents[i].id,
-                accidents[i].accident_date,
-                accidents[i].accident_type,
-                accidents[i].accident_description,
-                accidents[i].accident_role);
-    }
-
-    fclose(file);
-}
-
-void accident_data(SOCKET sock, const char* id) {
-    char when[100], what[100], how[200], role[20];
-    char buffer[MAX_BUFFER];
-
-    printf("사고 정보 입력\n");
-    printf("언제: ");
-    fgets(when, sizeof(when), stdin); when[strcspn(when, "\r\n")] = '\0';
-
-    printf("무엇을: ");
-    fgets(what, sizeof(what), stdin); what[strcspn(what, "\r\n")] = '\0';
-
-    printf("어떻게: ");
-    fgets(how, sizeof(how), stdin); how[strcspn(how, "\r\n")] = '\0';
-
-    printf("가해자or피해자: ");
-    fgets(role, sizeof(role), stdin); role[strcspn(role, "\r\n")] = '\0';
-
-    // 큐형식으로 입력받은 정보를 서버에 전송
-    snprintf(buffer, sizeof(buffer), "AI/%s/%s/%s/%s/%s", id, when, what, how, role);
-    send(sock, buffer, strlen(buffer), 0);
-
-    // 서버 응답 수신
-    int len = recv(sock, buffer, sizeof(buffer)-1, 0);
-    if (len > 0) {
-        buffer[len] = '\0';
-        printf("서버 응답: %s\n", buffer);
-    }
-}
-
-void process_insurance_compensation_info(char* buffer, SOCKET client_socket) {
-    char* token;
-    char ins_company[MAX_INFO_LENGTH];
-    char info_type[MAX_INFO_LENGTH];
-    char response[MAX_BUFFER * 10] = "";
-    char filename[256];
-    char line[MAX_BUFFER];
-    FILE* file;
-
-    // 프로토콜 파싱: BS/보험사명/항목명
-    token = strtok(buffer, "/"); // "BS"
-    token = strtok(NULL, "/");   // 보험사명
-    if (token) strcpy(ins_company, token); else ins_company[0] = '\0';
-    token = strtok(NULL, "/");   // 항목명
-    if (token) strcpy(info_type, token); else info_type[0] = '\0';
-
-    // 보험사별 보상안내 파일명 결정
-    if (strcmp(ins_company, "삼성화재") == 0) strcpy(filename, SAMSUNG_CPS_FILE);
-    else if (strcmp(ins_company, "DB손해보험") == 0) strcpy(filename, DB_CPS_FILE);
-    else if (strcmp(ins_company, "한화손해보험") == 0) strcpy(filename, HANWHA_CPS_FILE);
-    else if (strcmp(ins_company, "KB손해보험") == 0) strcpy(filename, KB_CPS_FILE);
-    else {
-        strcpy(response, "지원하지 않는 보험사입니다.");
-        send(client_socket, response, strlen(response), 0);
-        return;
-    }
-
-    file = fopen(filename, "r");
+    file = fopen(USER_FILE, "a");
     if (!file) {
-        strcpy(response, "보험사 파일을 열 수 없습니다.");
-        send(client_socket, response, strlen(response), 0);
-        return;
+        printf(" 파일 열기 실패 - %s\n", strerror(errno));
+        printf("파일 경로: %s\n", USER_FILE);
+        return 0;
     }
 
-    // 항목명 포함된 줄부터 빈 줄까지 추출
-    int in_section = 0;
-    response[0] = '\0';
-    while (fgets(line, sizeof(line), file)) {
-        if (!in_section) {
-            if (strstr(line, info_type)) {
-                in_section = 1;
-                strcat(response, line);
-            }
-            continue;
-        }
-        if (in_section) {
-            if (strcmp(line, "\n") == 0 || strcmp(line, "\r\n") == 0) break;
-            strcat(response, line);
-        }
+    fseek(file, 0, SEEK_END);
+    long file_size = ftell(file);
+    
+    if (file_size == 0) {
+        fprintf(file, "ID/PW/차번호/차종류/보험사\n");
+        printf("handle_new_user: 헤더 추가\n");
     }
+
+    char clean_id[20], clean_password[20], clean_car_number[20], clean_car_type[20], clean_insurance[20];
+    strncpy(clean_id, id, sizeof(clean_id) - 1);
+    clean_id[sizeof(clean_id) - 1] = '\0';
+    clean_id[strcspn(clean_id, "\r\n")] = '\0';
+    
+    strncpy(clean_password, password, sizeof(clean_password) - 1);
+    clean_password[sizeof(clean_password) - 1] = '\0';
+    clean_password[strcspn(clean_password, "\r\n")] = '\0';
+    
+    strncpy(clean_car_number, car_number, sizeof(clean_car_number) - 1);
+    clean_car_number[sizeof(clean_car_number) - 1] = '\0';
+    clean_car_number[strcspn(clean_car_number, "\r\n")] = '\0';
+    
+    strncpy(clean_car_type, car_type, sizeof(clean_car_type) - 1);
+    clean_car_type[sizeof(clean_car_type) - 1] = '\0';
+    clean_car_type[strcspn(clean_car_type, "\r\n")] = '\0';
+    
+    strncpy(clean_insurance, insurance, sizeof(clean_insurance) - 1);
+    clean_insurance[sizeof(clean_insurance) - 1] = '\0';
+    clean_insurance[strcspn(clean_insurance, "\r\n")] = '\0';
+   
+    int write_result = fprintf(file, "%s/%s/%s/%s/%s\n", clean_id, clean_password, clean_car_number, clean_car_type, clean_insurance);
+    if (write_result < 0) {
+        printf("handle_new_user: 파일 쓰기 실패 - %s\n", strerror(errno));
+        fclose(file);
+        return 0;
+    }
+
+    fflush(file);
     fclose(file);
-    if (strlen(response) == 0) strcpy(response, "해당 항목 안내가 없습니다.");
-    send(client_socket, response, strlen(response), 0);
+
+    printf("handle_new_user: 사용자 등록 완료 - ID: %s\n", clean_id);
+    printf("handle_new_user: 저장된 내용: %s/%s/%s/%s/%s\n", clean_id, clean_password, clean_car_number, clean_car_type, clean_insurance);
+    return 1; 
 }
 
-void LAW_guide(SOCKET client_socket) {
-    char buffer[MAX_BUFFER * 10];
-    FILE* file = fopen(ACCIDENT_LAW_FILE, "r");
-    if (!file) {
-        strcpy(buffer, "법률 안내 파일을 열 수 없습니다.");
-        send(client_socket, buffer, strlen(buffer), 0);
-        return;
-    }
-    buffer[0] = '\0';
-    char line[MAX_BUFFER];
-    while (fgets(line, sizeof(line), file)) {
-        strcat(buffer, line);
-    }
-    fclose(file);
-    send(client_socket, buffer, strlen(buffer), 0);
-}
+int save_accident_data(const char* id, const char* when, const char* what, 
+                 const char* how, const char* role) {
 
-int handle_login(const char* id, const char* pw) {
-    for (int i = 0; i < user_count; i++) {
-        if (strcmp(users[i].id, id) == 0 && strcmp(users[i].password, pw) == 0) {
-            return 1; // 로그인 성공
-        }
+    FILE *f = fopen(ACCIDENT_FILE, "a");
+    if (f == NULL) {
+        printf("사고 정보 파일 열기 실패: %s\n", strerror(errno));
+        return 0;
     }
-    return 0; // 로그인 실패
-}
 
-int handle_register(const char* id, const char* pw, const char* car_number, const char* car_type, const char* ins_company) {
-    for (int i = 0; i < user_count; i++) {
-        if (strcmp(users[i].id, id) == 0) {
-            return 0; // ID 중복
-        }
-    }
-    if (user_count >= MAX_USERS) return 0;
-    strcpy(users[user_count].id, id);
-    strcpy(users[user_count].password, pw);
-    strcpy(users[user_count].car_number, car_number);
-    strcpy(users[user_count].car_type, car_type);
-    strcpy(users[user_count].insurance_company, ins_company);
-    user_count++;
-    save_user_data();
+    fprintf(f, "%s/%s/%s/%s/%s\n", id, when, what, how, role);
+    
+    fclose(f);
     return 1;
 }
 
+int handle_ai_command(const char* message) {
+    char msg_copy[1024];
+    strncpy(msg_copy, message, sizeof(msg_copy) - 1);
+    msg_copy[sizeof(msg_copy) - 1] = '\0';
+
+    char *token = strtok(msg_copy, "/");
+    if (!token || strcmp(token, "AI") != 0) {
+        printf("잘못된 명령어 형식입니다.\n");
+        return 0;
+    }
+
+    char *id = strtok(NULL, "/");
+    char *when = strtok(NULL, "/");
+    char *what = strtok(NULL, "/");
+    char *how = strtok(NULL, "/");
+    char *role = strtok(NULL, "/");
+
+
+    if (!id || !when || !what || !how || !role) {
+        printf("필수 필드가 누락되었습니다.\n");
+        return 0;
+    }
+
+
+    if (strcmp(role, "가해자") != 0 && strcmp(role, "피해자") != 0) {
+        printf("역할은 '가해자' 또는 '피해자'여야 합니다.\n");
+        return 0;
+    }
+
+
+    if (save_accident_data(id, when, what, how, role)) {
+        printf("사고 정보가 성공적으로 저장되었습니다.\n");
+        return 1;
+    } else {
+        printf("사고 정보 저장에 실패했습니다.\n");
+        return 0;
+    }
+}
+
+// 사용자 정보 수정
+int USER_DATAUPDATE(const char* message, char* user_id) {
+    printf("USER_DATAUPDATE 함수 진입\n");
+    if (!message || !user_id) {
+        printf("USER_DATAUPDATE: message 또는 user_id가 NULL\n");
+        return 0;
+    }
+
+    char msg_copy[1024];
+    strncpy(msg_copy, message, sizeof(msg_copy) - 1);
+    msg_copy[sizeof(msg_copy) - 1] = '\0';
+    
+    char *token = strtok(msg_copy, "/");
+    if (!token || strcmp(token, "UF") != 0) {
+        printf("USER_DATAUPDATE: 메시지 형식이 UF가 아님\n");
+        return 0;
+    }
+
+    char *field_str = strtok(NULL, "/");
+    if (!field_str) {
+        printf("USER_DATAUPDATE: 필드 번호가 없음\n");
+        return 0;
+    }
+    int field = atoi(field_str);
+
+    char *client_msg_user_id = strtok(NULL, "/");
+    if (!client_msg_user_id || strcmp(client_msg_user_id, user_id) != 0) {
+        printf("불일치 또는 없음\n");
+        return 0;
+    }
+
+    char *new_value_str = strtok(NULL, "");
+    if (!new_value_str) {
+        printf("새로운 값이 없음\n");
+        return 0;
+    }
+
+    // 새 값에서 줄바꿈 문자 제거
+    new_value_str[strcspn(new_value_str, "\r\n")] = 0;
+
+    // 기존 사용자 정보 읽기
+    FILE *original_file = fopen(USER_FILE, "r");
+    if (!original_file) {
+        printf("원본 파일 열기 실패\n");
+        return 0;
+    }
+
+    // 임시 파일 생성
+    FILE *temp_file = fopen("temp_users.txt", "w");
+    if (!temp_file) {
+        printf("임시 파일 생성 실패\n");
+        fclose(original_file);
+        return 0;
+    }
+
+    char line[256];
+    int user_found = 0;
+    int line_count = 0;
+
+    if (fgets(line, sizeof(line), original_file)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        fprintf(temp_file, "%s\n", line);
+        line_count++;
+    }
+
+    while (fgets(line, sizeof(line), original_file)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        line_count++;
+
+        char file_id[20] = {0};
+        char file_pw[20] = {0};
+        char file_car_num[20] = {0};
+        char file_car_type[20] = {0};
+        char file_insurance[20] = {0};
+
+        if (sscanf(line, "%19[^/]/%19[^/]/%19[^/]/%19[^/]/%19[^\n]",
+                   file_id, file_pw, file_car_num, file_car_type, file_insurance) == 5) {
+            
+            if (strcmp(file_id, user_id) == 0) {
+
+                user_found = 1;
+                printf("USER_DATAUPDATE: 사용자 %s 정보 수정 중...\n", user_id);
+                
+    
+                switch (field) {
+                    case 1:
+                        fprintf(temp_file, "%s/%s/%s/%s/%s\n", 
+                                file_id, new_value_str, file_car_num, file_car_type, file_insurance);
+                        printf("USER_DATAUPDATE: 비밀번호를 %s로 수정\n", new_value_str);
+                        break;
+                    case 2: 
+                        fprintf(temp_file, "%s/%s/%s/%s/%s\n", 
+                                file_id, file_pw, new_value_str, file_car_type, file_insurance);
+                        printf("USER_DATAUPDATE: 차량번호를 %s로 수정\n", new_value_str);
+                        break;
+                    case 3:
+                        fprintf(temp_file, "%s/%s/%s/%s/%s\n", 
+                                file_id, file_pw, file_car_num, new_value_str, file_insurance);
+                        printf("USER_DATAUPDATE: 차종류를 %s로 수정\n", new_value_str);
+                        break;
+                    case 4:
+                        fprintf(temp_file, "%s/%s/%s/%s/%s\n", 
+                                file_id, file_pw, file_car_num, file_car_type, new_value_str);
+                        printf("USER_DATAUPDATE: 보험사를 %s로 수정\n", new_value_str);
+                        update_user_cache(file_id, new_value_str);
+                        break;
+                    case 5:
+                        {
+                            char *temp_new_value = strdup(new_value_str);
+                            char *pw_part = strtok(temp_new_value, "/");
+                            char *car_num_part = strtok(NULL, "/");
+                            char *car_type_part = strtok(NULL, "/");
+                            char *insurance_part = strtok(NULL, "/");
+                            
+                            if (pw_part && car_num_part && car_type_part && insurance_part) {
+                                fprintf(temp_file, "%s/%s/%s/%s/%s\n", 
+                                        file_id, pw_part, car_num_part, car_type_part, insurance_part);
+                                printf("USER_DATAUPDATE: 전체 정보 수정 완료\n");
+                        
+                                update_user_cache(file_id, insurance_part);
+                            } else {
+                                printf("USER_DATAUPDATE: 전체 정보 형식 오류\n");
+                                fprintf(temp_file, "%s\n", line); 
+                            }
+                            free(temp_new_value);
+                        }
+                        break;
+                    default:
+                        printf("USER_DATAUPDATE: 잘못된 필드 번호: %d\n", field);
+                        fprintf(temp_file, "%s\n", line); 
+                        break;
+                }
+            } else {
+               
+                fprintf(temp_file, "%s\n", line);
+            }
+        } else {
+         
+            fprintf(temp_file, "%s\n", line);
+        }
+    }
+
+    fclose(original_file);
+    fclose(temp_file);
+
+    if (!user_found) {
+        printf("USER_DATAUPDATE: 사용자 %s를 찾을 수 없음\n", user_id);
+        remove("temp_users.txt");
+        return 0;
+    }
+
+    if (remove(USER_FILE) != 0) {
+        printf("USER_DATAUPDATE: 원본 파일 삭제 실패\n");
+        remove("temp_users.txt");
+        return 0;
+    }
+
+    if (rename("temp_users.txt", USER_FILE) != 0) {
+        printf("USER_DATAUPDATE: 임시 파일을 원본 파일로 교체 실패\n");
+        return 0;
+    }
+    FILE* sync_file = fopen(USER_FILE, "r");
+    if (sync_file) {
+        fclose(sync_file);
+        printf("USER_DATAUPDATE: 파일 동기화 완료\n");
+    }
+
+    printf("USER_DATAUPDATE: 사용자 %s 정보 업데이트 완료\n", user_id);
+    return 1;
+}
+
+void show_accident_guide(SOCKET sock) {
+    printf("show_accident_guide 함수 진입\n");
+    FILE* file = fopen(ACCIDENT_GUIDE_FILE, "rb");
+    if (!file) {
+        printf("show_accident_guide: 사고 대처 안내 파일 열기 실패: %s\n", strerror(errno));
+        send(sock, "사고 대처 안내 정보를 불러올 수 없습니다.\n",
+             strlen("사고 대처 안내 정보를 불러올 수 없습니다.\n"), 0);
+        return;
+    }
+    printf("show_accident_guide: 사고 대처 안내 파일 열림: %s\n", ACCIDENT_GUIDE_FILE);
+
+    char header[] = "=== 사고 발생 시 대처방법 안내 ===\n\n";
+    send(sock, header, strlen(header), 0);
+
+    char buffer[1024];
+    int total_sent = 0;
+    int chunk_count = 0;
+    
+    while (fgets(buffer, sizeof(buffer), file)) {
+        trim_trailing_newlines(buffer);
+        strcat(buffer, "\n");
+        
+        int sent = send(sock, buffer, strlen(buffer), 0);
+        if (sent == SOCKET_ERROR) {
+            printf("show_accident_guide: 전송 오류 발생\n");
+            break;
+        }
+        total_sent += sent;
+        chunk_count++;
+        
+    }
+    
+    fclose(file);
+    
+    char end_marker[] = "\n=== 전송 완료 ===\n";
+    send(sock, end_marker, strlen(end_marker), 0);
+    
+    printf("show_accident_guide: 총 %d 청크, %d 바이트 전송 완료\n", chunk_count, total_sent);
+    printf("show_accident_guide: 함수 종료\n");
+}
+
+void show_law_guide(SOCKET sock) {
+    printf("DEBUG: show_law_guide 함수 진입\n");
+    FILE* file = fopen(ACCIDENT_LAW_FILE, "rb");
+    if (!file) {
+        printf("show_law_guide: 12대 중과실 법률 안내 파일 열기 실패: %s\n", strerror(errno));
+        send(sock, "12대 중과실 법률 안내를 불러올 수 없습니다.\n", 
+             strlen("12대 중과실 법률 안내를 불러올 수 없습니다.\n"), 0);
+        return;
+    }
+    printf("show_law_guide: 12대 중과실 법률 안내 파일 열림: %s\n", ACCIDENT_LAW_FILE);
+
+    char header[] = "=== 12대 중과실 법률 안내 ===\n\n";
+    send(sock, header, strlen(header), 0);
+
+    char buffer[1024];
+    int total_sent = 0;
+    int chunk_count = 0;
+    
+    while (fgets(buffer, sizeof(buffer), file)) {
+        trim_trailing_newlines(buffer); 
+        strcat(buffer, "\n"); 
+        
+        int sent = send(sock, buffer, strlen(buffer), 0);
+        if (sent == SOCKET_ERROR) {
+            printf("show_law_guide: 전송 오류 발생\n");
+            break;
+        }
+        total_sent += sent;
+        chunk_count++;
+
+        Sleep(10);
+    }
+    
+    fclose(file);
+
+    char end_marker[] = "\n=== 전송 완료 ===\n";
+    send(sock, end_marker, strlen(end_marker), 0);
+    
+    printf("show_law_guide: 총 %d 청크, %d 바이트 전송 완료\n", chunk_count, total_sent);
+    printf("show_law_guide: 함수 종료\n");
+}
+
+int get_user_insurance_company(const char* user_id, char* insurance_company_buf, size_t buf_size) {
+    printf("get_user_insurance_company - 사용자 ID: %s\n", user_id);
+    printf("get_user_insurance_company - USER_FILE 경로: %s\n", USER_FILE);
+
+    if (find_user_in_cache(user_id, insurance_company_buf, buf_size)) {
+        return 1;
+    }
+
+    Sleep(50);
+    
+
+    FILE* check_file = fopen(USER_FILE, "r");
+    if (!check_file) {
+        printf("get_user_insurance_company - 파일 존재하지 않음: %s\n", strerror(errno));
+        return 0;
+    }
+    fclose(check_file);
+    
+    FILE* file = fopen(USER_FILE, "r");
+    if (!file) {
+        printf("get_user_insurance_company - 파일 열기 실패: %s\n", strerror(errno));
+        return 0;
+    }
+    setvbuf(file, NULL, _IONBF, 0);
+
+    char line[256];
+    int line_count = 0;
+    int found_user = 0;
+    
+    while (fgets(line, sizeof(line), file)) {
+        line_count++;
+        line[strcspn(line, "\r\n")] = '\0';
+        printf("get_user_insurance_company - 라인 %d: %s\n", line_count, line);
+        if (strcmp(line, "ID/PW/차번호/차종류/보험사") == 0) {
+            printf("get_user_insurance_company - 헤더 라인 건너뛰기\n");
+            continue;
+        }
+
+        char file_id[20] = {0};
+        char file_pw[20] = {0};
+        char file_car_num[20] = {0};
+        char file_car_type[20] = {0};
+        char file_insurance[20] = {0};
+
+        if (sscanf(line, "%19[^/]/%19[^/]/%19[^/]/%19[^/]/%19[^\n]",
+                   file_id, file_pw, file_car_num, file_car_type, file_insurance) == 5) {
+            printf("get_user_insurance_company - 파싱된 정보: ID=%s, 보험사=%s\n", 
+                   file_id, file_insurance);
+            
+            if (strcmp(user_id, file_id) == 0) {
+                found_user = 1;
+                strncpy(insurance_company_buf, file_insurance, buf_size - 1);
+                insurance_company_buf[buf_size - 1] = '\0';
+                update_user_cache(user_id, file_insurance);
+                
+                printf("get_user_insurance_company - 보험사 정보 추출 성공: %s\n", 
+                       insurance_company_buf);
+                fclose(file);
+                return 1;
+            }
+        } else {
+            printf("라인 %d 파싱 실패: %s\n", line_count, line);
+        }
+    }
+
+    if (!found_user) {
+        printf("사용자 %s를 찾을 수 없음\n", user_id);
+    } else {
+        printf("보험사 정보를 찾을 수 없음\n");
+    }
+    
+    fclose(file);
+    return 0;
+}
+
+void BI_GUIDE(SOCKET clientSock, const char* msg) {
+    printf("클라이언트 요청: %s\n", msg);
+    char user_insurance_company[20];
+    char buffer[BUF_SIZE];
+    int guide_number;
+
+    char msg_copy[BUF_SIZE];
+    strncpy(msg_copy, msg, sizeof(msg_copy) - 1);
+    msg_copy[sizeof(msg_copy) - 1] = '\0';
+
+    char *temp_msg = msg_copy;
+    char *token = (char*)strtok_r(temp_msg, "/", &temp_msg); 
+    if (!token) return;
+
+    char *user_id_from_msg = (char*)strtok_r(NULL, "/", &temp_msg);
+    if (!user_id_from_msg) return;
+
+    char *guide_num_str = (char*)strtok_r(NULL, "/", &temp_msg);
+    if (!guide_num_str) return;
+    guide_number = atoi(guide_num_str);
+
+    if (!get_user_insurance_company(user_id_from_msg, user_insurance_company, sizeof(user_insurance_company))) {
+        printf("사용자 %s의 보험사 정보를 가져올 수 없음\n", user_id_from_msg);
+        send(clientSock, "사용자 보험사 정보를 가져올 수 없습니다.\n", 
+             strlen("사용자 보험사 정보를 가져올 수 없습니다.\n"), 0);
+        return;
+    }
+
+    printf("사용자 %s의 보험사: %s\n", user_id_from_msg, user_insurance_company);
+
+    char file_path[256];
+    if (strcmp(user_insurance_company, "삼성화재") == 0) {
+        strcpy(file_path, SAMSUNG_ACCIDENT_FILE);
+    } else if (strcmp(user_insurance_company, "한화손해보험") == 0) {
+        strcpy(file_path, HANWHA_ACCIDENT_FILE);
+    } else if (strcmp(user_insurance_company, "KB손해보험") == 0) {
+        strcpy(file_path, KB_ACCIDENT_FILE);
+    } else if (strcmp(user_insurance_company, "DB손해보험") == 0) {
+        strcpy(file_path, DB_ACCIDENT_FILE);
+    } else {
+        char error_msg[] = "알 수 없는 보험사입니다.\n";
+        send(clientSock, error_msg, strlen(error_msg), 0);
+        return;
+    }
+
+    FILE* guide_file_ptr = fopen(file_path, "r");
+    if (!guide_file_ptr) {
+        send(clientSock, "보험 안내 정보를 불러올 수 없습니다.\n", 
+             strlen("보험 안내 정보를 불러올 수 없습니다.\n"), 0);
+        return;
+    }
+
+    char file_content[8192] = {0}; 
+    while (fgets(buffer, sizeof(buffer), guide_file_ptr)) {
+        strcat(file_content, buffer);
+    }
+    fclose(guide_file_ptr);
+
+    printf("요청된 섹션 번호: %d\n", guide_number);
+
+  
+    char *content_ptr = file_content;
+    char *section_start = NULL;
+    char *section_end = NULL;
+    int found_section = 0;
+    
+    while (*content_ptr) {
+        if (*content_ptr == '+') {
+            int plus_count = 0;
+            char *temp = content_ptr;
+            while (*temp == '+') {
+                plus_count++;
+                temp++;
+            }
+            if (plus_count == guide_number) {
+                section_start = content_ptr + plus_count; 
+                while (*section_start == ' ' || *section_start == '.') section_start++; 
+                section_end = strstr(section_start, "//");
+                found_section = 1;
+                break;
+            }
+        }
+        content_ptr++;
+    }
+
+    if (!found_section) {
+        send(clientSock, "요청하신 보험 안내 정보를 찾을 수 없습니다.\n", 
+             strlen("요청하신 보험 안내 정보를 찾을 수 없습니다.\n"), 0);
+        return;
+    }
+
+    size_t section_length = section_end ? (section_end - section_start) : strlen(section_start);
+    char *current_pos = section_start;
+    int total_sent = 0;
+    int chunk_count = 0;
+    
+    while (section_length > 0) {
+        size_t chunk_size = (section_length > 1024) ? 1024 : section_length;
+        char chunk[1025];
+        strncpy(chunk, current_pos, chunk_size);
+        chunk[chunk_size] = '\0';
+        
+        int sent = send(clientSock, chunk, strlen(chunk), 0);
+        if (sent == SOCKET_ERROR) {
+            printf("전송 오류 발생\n");
+            break;
+        }
+        
+        total_sent += sent;
+        chunk_count++;
+        current_pos += chunk_size;
+        section_length -= chunk_size;
+        
+
+        Sleep(10);
+    }
+    
+    char end_marker[] = "\n=== 전송 완료 ===\n";
+    send(clientSock, end_marker, strlen(end_marker), 0);
+    
+    printf("총 %d 청크, %d 바이트 전송 완료\n", chunk_count, total_sent);
+}
+
+void BS_GUIDE(SOCKET clientSock, const char* msg) {
+    printf("클라이언트 요청: %s\n", msg);
+    char user_insurance_company[20];
+    char buffer[BUF_SIZE];
+    int guide_number;
+
+    char msg_copy[BUF_SIZE];
+    strncpy(msg_copy, msg, sizeof(msg_copy) - 1);
+    msg_copy[sizeof(msg_copy) - 1] = '\0';
+
+    char *temp_msg = msg_copy;
+    char *token = (char*)strtok_r(temp_msg, "/", &temp_msg); // "BS"
+    if (!token) return;
+
+    char *user_id_from_msg = (char*)strtok_r(NULL, "/", &temp_msg);
+    if (!user_id_from_msg) return;
+
+    char *guide_num_str = (char*)strtok_r(NULL, "/", &temp_msg);
+    if (!guide_num_str) return;
+    guide_number = atoi(guide_num_str);
+
+    if (!get_user_insurance_company(user_id_from_msg, user_insurance_company, sizeof(user_insurance_company))) {
+        printf("사용자 %s의 보험사 정보를 가져올 수 없음\n", user_id_from_msg);
+        char error_msg[] = "사용자 보험사 정보를 가져올 수 없습니다.\n";
+        send(clientSock, error_msg, strlen(error_msg), 0);
+        return;
+    }
+
+    printf("사용자 %s의 보험사: %s\n", user_id_from_msg, user_insurance_company);
+
+    char file_path[256];
+    if (strcmp(user_insurance_company, "삼성화재") == 0) {
+        strcpy(file_path, SAMSUNG_CPS_FILE);
+    } else if (strcmp(user_insurance_company, "한화손해보험") == 0) {
+        strcpy(file_path, HANWHA_CPS_FILE);
+    } else if (strcmp(user_insurance_company, "KB손해보험") == 0) {
+        strcpy(file_path, KB_CPS_FILE);
+    } else if (strcmp(user_insurance_company, "DB손해보험") == 0) {
+        strcpy(file_path, DB_CPS_FILE);
+    } else {
+        char error_msg[] = "알 수 없는 보험사입니다.\n";
+        send(clientSock, error_msg, strlen(error_msg), 0);
+        return;
+    }
+
+    FILE* guide_file_ptr = fopen(file_path, "r");
+    if (!guide_file_ptr) {
+        char error_msg[] = "보험 안내 정보를 불러올 수 없습니다.\n";
+        send(clientSock, error_msg, strlen(error_msg), 0);
+        return;
+    }
+
+    char file_content[8192] = {0};
+    while (fgets(buffer, sizeof(buffer), guide_file_ptr)) {
+        strcat(file_content, buffer);
+    }
+    fclose(guide_file_ptr);
+
+    printf("요청된 섹션 번호: %d\n", guide_number);
+
+
+    char *content_ptr = file_content;
+    char *section_start = NULL;
+    char *section_end = NULL;
+    int found_section = 0;
+    
+    while (*content_ptr) {
+        if (*content_ptr == '+') {
+            int plus_count = 0;
+            char *temp = content_ptr;
+            while (*temp == '+') {
+                plus_count++;
+                temp++;
+            }
+            if (plus_count == guide_number) {
+                section_start = content_ptr + plus_count;
+                while (*section_start == ' ' || *section_start == '.') section_start++; 
+                section_end = strstr(section_start, "//");
+                found_section = 1;
+                break;
+            }
+        }
+        content_ptr++;
+    }
+
+    if (!found_section) {
+        char error_msg[] = "요청하신 보험 안내 정보를 찾을 수 없습니다.\n";
+        send(clientSock, error_msg, strlen(error_msg), 0);
+        return;
+    }
+
+    size_t section_length = section_end ? (section_end - section_start) : strlen(section_start);
+    char *current_pos = section_start;
+    int total_sent = 0;
+    int chunk_count = 0;
+    
+    while (section_length > 0) {
+        size_t chunk_size = (section_length > 1024) ? 1024 : section_length;
+        char chunk[1025];
+        strncpy(chunk, current_pos, chunk_size);
+        chunk[chunk_size] = '\0';
+        
+        int sent = send(clientSock, chunk, strlen(chunk), 0);
+        if (sent == SOCKET_ERROR) {
+            printf("전송 오류 발생\n");
+            break;
+        }
+        
+        total_sent += sent;
+        chunk_count++;
+        current_pos += chunk_size;
+        section_length -= chunk_size;
+
+        Sleep(10);
+    }
+    
+    char end_marker[] = "\n=== 전송 완료 ===\n";
+    send(clientSock, end_marker, strlen(end_marker), 0);
+    
+    printf("총 %d 청크, %d 바이트 전송 완료\n", chunk_count, total_sent);
+}
+
+void EXIT_PROGRAM(SOCKET clientSock) {
+    send(clientSock, "프로그램을 종료합니다.\n", strlen("프로그램을 종료합니다.\n"), 0);
+    closesocket(clientSock);
+}
+
+void handle_client_message(int clientSock, const char* msg, int* logged_in, char user_id[], size_t user_id_buf_size) {
+    if (strncmp(msg, "lo/", 3) == 0) {
+        char id[20] = {0}, pass[20] = {0}; 
+        char* first_slash = strchr(msg + 3, '/');
+        if (first_slash) {
+            int id_len = first_slash - (msg + 3);
+            strncpy(id, msg + 3, id_len);
+            id[id_len] = '\0'; 
+
+            strcpy(pass, first_slash + 1);
+            pass[sizeof(pass) - 1] = '\0'; 
+
+            printf("Received login attempt for ID='%s', PW='%s'\\n", id, pass); 
+
+            if (UserOk(id, pass)) {
+                *logged_in = 1;
+                strncpy(user_id, id, user_id_buf_size - 1);
+                user_id[user_id_buf_size - 1] = '\0';
+                send(clientSock, "로그인 성공\\n", strlen("로그인 성공\\n"), 0);
+                printf("사용자 로그인: %s\\n", id);
+                
+            } else {
+                send(clientSock, "아이디 또는 비밀번호가 일치하지 않습니다.\\n", 
+                     strlen("아이디 또는 비밀번호가 일치하지 않습니다.\\n"), 0);
+                printf("로그인 실패: %s\\n", id);
+            }
+        } else {
+            printf("Login message format error (missing slash): '%s'\\n", msg);
+            send(clientSock, "로그인 요청 형식이 올바르지 않습니다.\\n", strlen("로그인 요청 형식이 올바르지 않습니다.\\n"), 0);
+        }
+    } else if (strncmp(msg, "new/", 4) == 0) {
+        if (!(*logged_in)) {
+            char register_msg[BUF_SIZE];
+            strncpy(register_msg, msg + 4, sizeof(register_msg) - 1);
+            register_msg[sizeof(register_msg) - 1] = '\0';
+
+            char *temp_msg = register_msg;
+            char *id = (char*)strtok_r(temp_msg, "/", &temp_msg);
+            char *password = (char*)strtok_r(temp_msg, "/", &temp_msg);
+            char *car_number = (char*)strtok_r(temp_msg, "/", &temp_msg);
+            char *car_type = (char*)strtok_r(temp_msg, "/", &temp_msg);
+            char *insurance_company = (char*)strtok_r(temp_msg, "/", &temp_msg);
+
+            printf("회원가입 요청 - ID: %s, PW: %s, 차량번호: %s, 차종류: %s, 보험사: %s\n", 
+                   id ? id : "NULL", password ? password : "NULL", 
+                   car_number ? car_number : "NULL", car_type ? car_type : "NULL", 
+                   insurance_company ? insurance_company : "NULL");
+
+            if (id && password && car_number && car_type && insurance_company) {
+                if (handle_new_user(id, password, car_number, car_type, insurance_company)) {
+                    send(clientSock, "1\n", strlen("1\n"), 0); 
+                    printf("회원가입 성공: %s\n", id);
+                } else {
+                    send(clientSock, "0\n", strlen("0\n"), 0); 
+                    printf("회원가입 실패: %s (ID 중복 또는 파일 오류)\n", id);
+                }
+            } else {
+                send(clientSock, "회원가입 정보 형식이 올바르지 않습니다.\n", 
+                     strlen("회원가입 정보 형식이 올바르지 않습니다.\n"), 0);
+                printf("회원가입 실패: 정보 형식 오류\n");
+            }
+        } else {
+            send(clientSock, "이미 로그인되어 있습니다.\n", 
+                 strlen("이미 로그인되어 있습니다.\n"), 0);
+            printf("회원가입 실패: 이미 로그인된 사용자\n");
+        }
+    } else if (strncmp(msg, "check_id/", 9) == 0) {
+     
+        char check_id[20];
+        strncpy(check_id, msg + 9, sizeof(check_id) - 1);
+        check_id[sizeof(check_id) - 1] = '\0';
+        
+        printf("ID 중복 체크 요청 - ID: %s\n", check_id);
+        
+        FILE *file = fopen(USER_FILE, "r");
+        int is_duplicate = 0;
+        
+        if (file) {
+            printf("파일 열기 성공\n");
+            char line[256];
+            while (fgets(line, sizeof(line), file)) {
+                line[strcspn(line, "\r\n")] = '\0';
+                printf("파일에서 읽은 라인: %s\n", line);
+                
+                char *saveptr;
+                char *current_id = strtok_r(line, "/", &saveptr);
+                if (current_id && strcmp(current_id, check_id) == 0) {
+                    is_duplicate = 1;
+                    printf("ID 중복 발견 - %s\n", check_id);
+                    break;
+                }
+            }
+            fclose(file);
+        } else {
+            printf("파일 열기 실패 - %s\n", strerror(errno));
+            printf("파일이 존재하지 않으므로 ID 사용 가능\n");
+        }
+        
+        if (is_duplicate) {
+            send(clientSock, "1\n", strlen("1\n"), 0); 
+            printf("ID 중복 확인 - %s\n", check_id);
+        } else {
+            send(clientSock, "0\n", strlen("0\n"), 0); 
+            printf("ID 사용 가능 - %s\n", check_id);
+        }
+    } else if (strncmp(msg, "AC", 2) == 0) {
+        if (*logged_in) {
+            show_accident_guide(clientSock);
+        } else {
+            send(clientSock, "로그인이 필요합니다.\n", strlen("로그인이 필요합니다.\n"), 0);
+        }
+    } else if (strncmp(msg, "LAW", 3) == 0) {
+        if (*logged_in) {
+            show_law_guide(clientSock);
+        } else {
+            send(clientSock, "로그인이 필요합니다.\n", strlen("로그인이 필요합니다.\n"), 0);
+        }
+    } else if (strncmp(msg, "BI/", 3) == 0) {
+        if (*logged_in) {
+            BI_GUIDE(clientSock, msg);
+        } else {
+            send(clientSock, "로그인이 필요합니다.\n", strlen("로그인이 필요합니다.\n"), 0);
+        }
+    } else if (strncmp(msg, "BS/", 3) == 0) {
+        if (*logged_in) {
+            BS_GUIDE(clientSock, msg);
+        } else {
+            send(clientSock, "로그인이 필요합니다.\n", strlen("로그인이 필요합니다.\n"), 0);
+        }
+    } else if (strncmp(msg, "AI/", 3) == 0) {
+        if (*logged_in) {
+            if (handle_ai_command(msg)) {
+                send(clientSock, "사고 정보가 성공적으로 저장되었습니다.\n", 
+                     strlen("사고 정보가 성공적으로 저장되었습니다.\n"), 0);
+            } else {
+                send(clientSock, "사고 정보 저장에 실패했습니다.\n", 
+                     strlen("사고 정보 저장에 실패했습니다.\n"), 0);
+            }
+        } else {
+            send(clientSock, "로그인이 필요합니다.\n", strlen("로그인이 필요합니다.\n"), 0);
+        }
+    } else if (strncmp(msg, "EX", 2) == 0) {
+        EXIT_PROGRAM(clientSock);
+    } else if (strncmp(msg, "UF", 2) == 0) {
+        if (*logged_in) {
+            if (USER_DATAUPDATE(msg, user_id)) {
+                send(clientSock, "OK:사용자 정보가 성공적으로 업데이트되었습니다.\n", 
+                     strlen("OK:사용자 정보가 성공적으로 업데이트되었습니다.\n"), 0);
+            } else {
+                send(clientSock, "오류:사용자 정보 업데이트에 실패했습니다.\n", 
+                     strlen("오류:사용자 정보 업데이트에 실패했습니다.\n"), 0);
+            }
+        } else {
+            send(clientSock, "로그인이 필요합니다.\n", strlen("로그인이 필요합니다.\n"), 0);
+        }
+    }
+}
+
+unsigned WINAPI HandleClient(void* arg) {
+
+    SOCKET clientSock = *((SOCKET*)arg);
+    int strLen = 0, i;
+    char msg[BUF_SIZE];
+    int logged_in = 0;
+    char user_id[50] = {0};
+
+    while (1) { 
+        strLen = recv(clientSock, msg, sizeof(msg) - 1, 0); 
+        
+        if (strLen <= 0) { 
+            if (strLen == 0) {
+                printf("클라이언트 %s가 정상적으로 연결을 종료했습니다.\n", user_id[0] ? user_id : "미인증 사용자");
+            } else {
+                printf("클라이언트 %s와의 통신 오류 발생: %d\n", user_id[0] ? user_id : "미인증 사용자", WSAGetLastError());
+            }
+            break; 
+        }
+
+        msg[strLen] = '\0';
+        printf("수신된 메시지: %s\n", msg);  
+
+        handle_client_message(clientSock, msg, &logged_in, user_id, sizeof(user_id));
+    }
+
+    printf("클라이언트 연결 종료: %s\n", user_id[0] ? user_id : "미인증 사용자");
+
+    WaitForSingleObject(hMutex, INFINITE);
+    for (i = 0; i < clientCount; i++) {
+        if (clientSock == clientSocks[i]) {
+            for (int j = i; j < clientCount - 1; j++) {
+                clientSocks[j] = clientSocks[j + 1];
+            }
+            break;
+        }
+    }
+    clientCount--;
+    printf("현재 연결된 클라이언트 수: %d\n", clientCount);
+    ReleaseMutex(hMutex);
+    closesocket(clientSock);
+    return 0;
+}
+
+
+int main() {
+    SetConsoleOutputCP(CP_UTF8); 
+    SetConsoleCP(CP_UTF8); 
+    
+    char current_dir[256];
+    if (GetCurrentDirectory(sizeof(current_dir), current_dir)) {
+        printf("현재 작업 디렉토리: %s\n", current_dir);
+    }
+    printf("USER_FILE 경로: %s\n", USER_FILE);
+    
+    WSADATA wsaData;
+    SOCKET serverSock, clientSock;
+    SOCKADDR_IN serverAddr, clientAddr;
+    int clientAddrSize;
+    HANDLE hThread;
+    HANDLE threadHandles[MAX_CLNT] = {0}; 
+
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
+        ErrorHandling("WSAStartup() error!");
+
+    hMutex = CreateMutex(NULL, FALSE, NULL);
+    serverSock = socket(PF_INET, SOCK_STREAM, 0);
+
+    memset(&serverAddr, 0, sizeof(serverAddr));
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    serverAddr.sin_port = htons(PORT_NUM);
+
+    if (bind(serverSock, (SOCKADDR*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR)
+        ErrorHandling("bind() error");
+    if (listen(serverSock, 5) == SOCKET_ERROR)
+        ErrorHandling("listen() error");
+
+    printf("서버가 시작되었습니다. 포트: %d\n", PORT_NUM);
+    printf("클라이언트 연결을 기다리는 중...\n");
+
+    while (1) {
+        clientAddrSize = sizeof(clientAddr);
+        clientSock = accept(serverSock, (SOCKADDR*)&clientAddr, &clientAddrSize);
+        
+        if (clientSock == INVALID_SOCKET) {
+            printf("클라이언트 연결 수락 실패: %d\n", WSAGetLastError());
+            continue;
+        }
+        
+        WaitForSingleObject(hMutex, INFINITE);
+
+        if (clientCount < MAX_CLNT) {
+            clientSocks[clientCount] = clientSock;
+  
+            hThread = (HANDLE)_beginthreadex(NULL, 0, HandleClient, (void*)&clientSock, 0, NULL);
+            if (hThread) {
+                threadHandles[clientCount] = hThread;
+                clientCount++;
+                printf("연결된 클라이언트 IP: %s (총 %d명)\n", inet_ntoa(clientAddr.sin_addr), clientCount);
+            } else {
+                printf("스레드 생성 실패\n");
+                closesocket(clientSock);
+            }
+        } else {
+            printf("최대 클라이언트 수 초과\n");
+            closesocket(clientSock);
+        }
+        
+        ReleaseMutex(hMutex);
+
+        WaitForSingleObject(hMutex, INFINITE);
+        for (int i = 0; i < clientCount; i++) {
+            if (threadHandles[i] && WaitForSingleObject(threadHandles[i], 0) == WAIT_OBJECT_0) {
+                CloseHandle(threadHandles[i]);
+                threadHandles[i] = NULL;
+            }
+        }
+        ReleaseMutex(hMutex);
+    }
+
+    for (int i = 0; i < clientCount; i++) {
+        if (threadHandles[i]) {
+            CloseHandle(threadHandles[i]);
+        }
+    }
+    
+    closesocket(serverSock);
+    WSACleanup();
+    return 0;
+}
 
 
 
@@ -624,5 +1219,154 @@ int handle_register(const char* id, const char* pw, const char* car_number, cons
 
 
 
+void END_PROGRAM(SOCKET sock) {
+    send(sock, "END_PROGRAM:OK\n", strlen("END_PROGRAM:OK\n"), 0);
+    exit(0);
+}
 
 
+void ErrorHandling(char* msg) {
+    fputs(msg, stderr);
+    fputc('\n', stderr);
+    exit(1);
+}
+
+int get_insurance_info(const char* message, char* response) {
+    printf("함수 사용중....\n");
+    if (!message) {
+        printf("받은 메시지가 NULL\n");
+        return 0;
+    }
+
+    char msg_copy[1024];
+    strncpy(msg_copy, message, sizeof(msg_copy) - 1);
+    msg_copy[sizeof(msg_copy) - 1] = '\0';
+    
+    char *token = strtok(msg_copy, "/");
+    if (!token || strcmp(token, "BI") != 0) {
+        printf("메시지 형식이 BI가 아님\n");
+        return 0;
+    }
+
+    char *user_id = strtok(NULL, "/");
+    if (!user_id) {
+        printf("사용자 ID가 없음\n");
+        return 0;
+    }
+
+    char *item_str = strtok(NULL, "/");
+    if (!item_str) {
+        printf("항목 번호가 없음\n");
+        return 0;
+    }
+    int item = atoi(item_str);
+
+    FILE *user_file = fopen(USER_FILE, "r");
+    if (!user_file) {
+        printf("사용자 정보 파일 열기 실패\n");
+        return 0;
+    }
+
+    char line[256];
+    char *insurance_company = NULL;
+    int found = 0;
+
+    while (fgets(line, sizeof(line), user_file)) {
+        line[strcspn(line, "\n")] = 0;
+        
+        char *saveptr;
+        char *current_id = strtok_r(line, "/", &saveptr);
+        if (!current_id) continue;
+
+        if (strcmp(current_id, user_id) == 0) {
+  
+            strtok_r(NULL, "/", &saveptr);
+            strtok_r(NULL, "/", &saveptr);
+            strtok_r(NULL, "/", &saveptr);
+ 
+            insurance_company = strtok_r(NULL, "/", &saveptr);
+            if (insurance_company) {
+                found = 1;
+                break;
+            }
+        }
+    }
+    fclose(user_file);
+
+    if (!found || !insurance_company) {
+        printf("사용자 또는 보험사 정보를 찾을 수 없음\n");
+        return 0;
+    }
+
+    const char *insurance_file = NULL;
+    if (strcmp(insurance_company, "삼성화재") == 0) {
+        insurance_file = SAMSUNG_ACCIDENT_FILE;
+    } else if (strcmp(insurance_company, "한화손해보험") == 0) {
+        insurance_file = HANWHA_ACCIDENT_FILE;
+    } else if (strcmp(insurance_company, "KB손해보험") == 0) {
+        insurance_file = KB_ACCIDENT_FILE;
+    } else if (strcmp(insurance_company, "DB손해보험") == 0) {
+        insurance_file = DB_ACCIDENT_FILE;
+    } else {
+        printf("지원하지 않는 보험사\n");
+        return 0;
+    }
+
+    FILE *info_file = fopen(insurance_file, "r");
+    if (!info_file) {
+        printf("보험사 정보 파일 열기 실패\n");
+        return 0;
+    }
+
+    char file_content[10000] = {0};
+    char buffer[1024];
+    while (fgets(buffer, sizeof(buffer), info_file)) {
+        trim_trailing_newlines(buffer);
+        strcat(file_content, buffer);
+        strcat(file_content, "\n");
+    }
+    fclose(info_file);
+
+    printf("파일 내용: %s\n", file_content);
+
+    char *start = file_content;
+    char *end = NULL;
+    int current_item = 0;
+    int found_item = 0;
+
+    while (*start) {
+
+        if (*start == '+') {
+            current_item++;
+            printf("%d 발견\n", current_item);
+            
+            if (current_item == item) {
+                found_item = 1;
+                end = strchr(start + 1, '+');
+                if (end) {
+
+                    char temp = *end;
+                    *end = '\0';
+                    
+                    snprintf(response, 4096, "BI/%s/%d/%s", user_id, item, start);
+                    printf("내용: %s\n", start);
+      
+                    *end = temp;
+                    return 1;
+                } else {
+                    snprintf(response, 4096, "BI/%s/%d/%s", user_id, item, start);
+                    printf("추출된 내용(마지막 항목): %s\n", start);
+                    return 1;
+                }
+            }
+        }
+        start++;
+    }
+
+    if (!found_item) {
+        printf("해당 항목을 찾을 수 없음\n");
+        return 0;
+    }
+
+    return 1;
+}
